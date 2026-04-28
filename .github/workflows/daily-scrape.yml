@@ -32,3 +32,11 @@ jobs:
           LR_APP_USERNAME: ${{ secrets.LR_APP_USERNAME }}
           LRNEO_HEADLESS: 'true'
         run: node lrneo-worker.js
+
+      - name: Upload debug screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: debug-aline.png
+          if-no-files-found: ignore
