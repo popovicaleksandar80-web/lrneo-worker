@@ -47,9 +47,6 @@ async function loginIfNeeded(page, email, password) {
 }
 
 async function extractAllRows(page) {
-  const frameCount = page.frames().length;
-  console.log('[extract] frames:', frameCount, page.frames().map(f => f.url()).join(' | '));
-
   const result = await page.evaluate(() => {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
@@ -92,12 +89,11 @@ async function extractAllRows(page) {
     return {
       rows: allRows,
       tableCount: document.querySelectorAll('table').length,
-      bodyLen: (document.body.textContent || '').length,
       hasHU: /HU\d{6}/.test(document.body.textContent || ''),
     };
   });
 
-  console.log(`[extract] tables=${result.tableCount} bodyLen=${result.bodyLen} hasHU=${result.hasHU} rows=${result.rows.length}`);
+  console.log(`[extract] tables=${result.tableCount} hasHU=${result.hasHU} rows=${result.rows.length}`);
   return result.rows;
 }
 
@@ -110,6 +106,28 @@ function usefulRows(rows) {
 
 function partnerCount(rows) {
   return rows.filter((row) => row.some((cell) => /^(HU|DE)\d{6,}$/.test(clean(cell)))).length;
+}
+
+function cleanAndDedup(rows) {
+  // find PSZ column index
+  let pszCol = 0;
+  const headerRow = rows.find(row => row.some(cell => cell === 'PSZ'));
+  if (headerRow) {
+    const idx = headerRow.findIndex(cell => cell === 'PSZ');
+    if (idx >= 0) pszCol = idx;
+  }
+  // slice from PSZ, deduplicate
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    const sliced = pszCol > 0 ? row.slice(pszCol) : row;
+    const key = sliced.join('|');
+    if (!seen.has(key) && sliced.some(Boolean)) {
+      seen.add(key);
+      result.push(sliced);
+    }
+  }
+  return result;
 }
 
 async function waitForAlineRows(page) {
@@ -172,7 +190,8 @@ async function main() {
     await page.waitForTimeout(3000);
     await dismissCookiePopup(page);
     await page.screenshot({ path: 'debug-aline.png', fullPage: true }).catch(() => {});
-    const rows = await waitForAlineRows(page);
+    const rawRows = await waitForAlineRows(page);
+    const rows = cleanAndDedup(rawRows);
     const result = await postSnapshot(rows, page.url());
     console.log(JSON.stringify({ ok: true, uploaded: result, rows: rows.length }, null, 2));
   } finally {
