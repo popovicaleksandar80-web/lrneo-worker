@@ -47,28 +47,58 @@ async function loginIfNeeded(page, email, password) {
 }
 
 async function extractAllRows(page) {
-  return page.evaluate(() => {
+  const frameCount = page.frames().length;
+  console.log('[extract] frames:', frameCount, page.frames().map(f => f.url()).join(' | '));
+
+  const result = await page.evaluate(() => {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
-    const tableRows = [];
+    const allRows = [];
     for (const table of Array.from(document.querySelectorAll('table'))) {
-      const rows = Array.from(table.querySelectorAll('tr'))
-        .map((tr) => Array.from(tr.children).map((cell) => clean(cell.innerText || cell.textContent)))
-        .filter((row) => row.some(Boolean));
-      const text = rows.flat().join(' ');
-      if (rows.length && /PSZ|Összpont|Osszpont|Név|Nev/.test(text)) tableRows.push(rows);
+      for (const tr of Array.from(table.querySelectorAll('tr'))) {
+        const cells = Array.from(tr.children).map(cell => clean(cell.textContent));
+        if (cells.some(Boolean)) allRows.push(cells);
+      }
     }
-    if (tableRows.length) return tableRows.sort((a, b) => b.length - a.length)[0];
 
-    const gridRows = Array.from(document.querySelectorAll('[role="row"], .ag-row, .ui-grid-row, .mat-row, .datatable-row'))
-      .map((row) => {
-        const cells = Array.from(row.querySelectorAll('[role="gridcell"], [role="columnheader"], .ag-cell, .ui-grid-cell, .mat-cell, .datatable-body-cell'))
-          .map((cell) => clean(cell.innerText || cell.textContent));
-        return cells.length ? cells : [clean(row.innerText || row.textContent)];
-      })
-      .filter((row) => row.some(Boolean));
-    return gridRows;
+    for (const row of Array.from(document.querySelectorAll('[role="row"], .ag-row, .mat-row, .datatable-row'))) {
+      const cells = Array.from(row.querySelectorAll('[role="gridcell"], [role="columnheader"], .ag-cell, .mat-cell, .datatable-body-cell'))
+        .map(cell => clean(cell.textContent));
+      if (cells.some(Boolean)) allRows.push(cells);
+    }
+
+    if (allRows.filter(r => r.some(c => /^(HU|DE)\d{6,}$/.test(c))).length === 0) {
+      const allEls = Array.from(document.querySelectorAll('*'));
+      const partnerEls = allEls.filter(el => {
+        const t = clean(el.textContent);
+        return /^(HU|DE)\d{6,}$/.test(t);
+      });
+      const seen = new Set();
+      for (const el of partnerEls) {
+        let parent = el.parentElement;
+        while (parent && parent !== document.body) {
+          if (seen.has(parent)) break;
+          if (parent.children.length >= 3) {
+            seen.add(parent);
+            const cells = Array.from(parent.children).map(c => clean(c.textContent));
+            if (cells.some(Boolean)) allRows.push(cells);
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      }
+    }
+
+    return {
+      rows: allRows,
+      tableCount: document.querySelectorAll('table').length,
+      bodyLen: (document.body.textContent || '').length,
+      hasHU: /HU\d{6}/.test(document.body.textContent || ''),
+    };
   });
+
+  console.log(`[extract] tables=${result.tableCount} bodyLen=${result.bodyLen} hasHU=${result.hasHU} rows=${result.rows.length}`);
+  return result.rows;
 }
 
 function usefulRows(rows) {
@@ -79,7 +109,7 @@ function usefulRows(rows) {
 }
 
 function partnerCount(rows) {
-  return rows.filter((row) => row.some((cell) => /^(HU|DE)\d{6,}/.test(cell))).length;
+  return rows.filter((row) => row.some((cell) => /^(HU|DE)\d{6,}$/.test(clean(cell)))).length;
 }
 
 async function waitForAlineRows(page) {
@@ -89,8 +119,9 @@ async function waitForAlineRows(page) {
     await dismissCookiePopup(page);
     const rows = usefulRows(await extractAllRows(page));
     if (rows.length > best.length) best = rows;
-    const text = rows.flat().join(' ');
-    if (/PSZ/.test(text) && /Összpont|Osszpont/.test(text) && partnerCount(rows) >= 3) return rows;
+    const pc = partnerCount(rows);
+    console.log(`[poll] useful=${rows.length} partners=${pc}`);
+    if (pc >= 3) return rows;
     await page.waitForTimeout(2000);
   }
   throw new Error(`Neo A-line table did not fully load. Visible partner rows: ${partnerCount(best)}. Rows: ${JSON.stringify(best).slice(0, 1200)}`);
