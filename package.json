@@ -1,0 +1,14 @@
+{
+  "name": "lrneo-screen-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install-browser": "playwright install chromium",
+    "run": "node lrneo-worker.js",
+    "start": "npx playwright install chromium --with-deps && node lrneo-worker.js"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
