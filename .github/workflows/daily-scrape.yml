@@ -1,0 +1,35 @@
+name: LR Neo Daily Scrape
+
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run LR Neo worker
+        env:
+          LRNEO_EMAIL: ${{ secrets.LRNEO_EMAIL }}
+          LRNEO_PASSWORD: ${{ secrets.LRNEO_PASSWORD }}
+          LR_APP_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
+          LR_APP_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
+          LR_APP_USERNAME: ${{ secrets.LR_APP_USERNAME }}
+          LRNEO_HEADLESS: 'true'
+        run: node lrneo-worker.js
