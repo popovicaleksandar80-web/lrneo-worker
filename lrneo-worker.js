@@ -16,6 +16,14 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+async function dismissCookiePopup(page) {
+  const btn = page.locator('button:has-text("Összes süti elfogadása"), button:has-text("Accept all"), button:has-text("Elfogad")').first();
+  if (await btn.count()) {
+    await btn.click().catch(() => {});
+    await page.waitForTimeout(1000);
+  }
+}
+
 async function loginIfNeeded(page, email, password) {
   const text = await page.locator('body').innerText({ timeout: 15000 }).catch(() => '');
   if (/PSZ|Összpont|Osszpont|Partner keresés|Partner kereses/.test(text)) return;
@@ -39,19 +47,6 @@ async function loginIfNeeded(page, email, password) {
 }
 
 async function extractAllRows(page) {
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll('.ag-body-viewport, .cdk-virtual-scroll-viewport, [style*="overflow-y"], [style*="overflow: auto"]');
-    containers.forEach(el => { el.scrollTop = 9999; });
-    window.scrollTo(0, document.body.scrollHeight);
-  });
-  await page.waitForTimeout(2000);
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll('.ag-body-viewport, .cdk-virtual-scroll-viewport, [style*="overflow-y"], [style*="overflow: auto"]');
-    containers.forEach(el => { el.scrollTop = 0; });
-    window.scrollTo(0, 0);
-  });
-  await page.waitForTimeout(1000);
-
   return page.evaluate(() => {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
@@ -84,13 +79,14 @@ function usefulRows(rows) {
 }
 
 function partnerCount(rows) {
-  return rows.filter((row) => /^(HU|DE)\d{6,}/.test(clean(row[0]))).length;
+  return rows.filter((row) => row.some((cell) => /^(HU|DE)\d{6,}/.test(cell))).length;
 }
 
 async function waitForAlineRows(page) {
   let best = [];
   const until = Date.now() + 90000;
   while (Date.now() < until) {
+    await dismissCookiePopup(page);
     const rows = usefulRows(await extractAllRows(page));
     if (rows.length > best.length) best = rows;
     const text = rows.flat().join(' ');
@@ -143,6 +139,7 @@ async function main() {
     await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {});
     await page.waitForTimeout(3000);
+    await dismissCookiePopup(page);
     await page.screenshot({ path: 'debug-aline.png', fullPage: true }).catch(() => {});
     const rows = await waitForAlineRows(page);
     const result = await postSnapshot(rows, page.url());
