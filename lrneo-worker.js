@@ -38,23 +38,23 @@ async function loginIfNeeded(page, email, password) {
 }
 
 async function extractVisibleRows(page) {
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(1000);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(500);
+
   return page.evaluate(() => {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (el) => {
       if (!el) return false;
       const style = window.getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-    };
-    const inViewport = (el) => {
-      const rect = el.getBoundingClientRect();
-      return rect.bottom >= 0 && rect.top <= window.innerHeight + 2;
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     };
 
     const tableRows = [];
     for (const table of Array.from(document.querySelectorAll('table')).filter(visible)) {
       const rows = Array.from(table.querySelectorAll('tr'))
-        .filter((tr) => visible(tr) && inViewport(tr))
+        .filter((tr) => visible(tr))
         .map((tr) => Array.from(tr.children).filter(visible).map((cell) => clean(cell.innerText || cell.textContent)))
         .filter((row) => row.some(Boolean));
       const text = rows.flat().join(' ');
@@ -63,7 +63,7 @@ async function extractVisibleRows(page) {
     if (tableRows.length) return tableRows.sort((a, b) => b.length - a.length)[0];
 
     const gridRows = Array.from(document.querySelectorAll('[role="row"], .ag-row, .ui-grid-row, .mat-row, .mat-header-row, .datatable-row'))
-      .filter((row) => visible(row) && inViewport(row))
+      .filter((row) => visible(row))
       .map((row) => {
         const cells = Array.from(row.querySelectorAll('[role="gridcell"], [role="columnheader"], .ag-cell, .ui-grid-cell, .mat-cell, .mat-header-cell, .datatable-body-cell'))
           .filter(visible)
@@ -133,7 +133,7 @@ async function main() {
   const browser = await chromium.launch({ headless, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
     const context = await browser.newContext({
-      viewport: { width: 1500, height: 620 },
+      viewport: { width: 1920, height: 1080 },
       locale: 'hu-HU',
     });
     const page = await context.newPage();
