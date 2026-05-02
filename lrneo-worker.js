@@ -154,7 +154,20 @@ async function waitForAlineRows(page) {
     if (rows.length > best.length) best = rows;
     const pc = partnerCount(rows);
     console.log(`  [poll] useful=${rows.length} partners=${pc}`);
-    if (pc >= 3) return rows;
+    if (best.length > 0 && rows.length === best.length) return best;
+    await page.waitForTimeout(2000);
+  }
+  console.log(`  [poll] returning best=${best.length} rows`);
+  return best;
+}
+    await page.waitForTimeout(2000);
+  }
+  throw new Error(`A-line table did not fully load. Partners found: ${partnerCount(best)}`);
+}
+    await page.waitForTimeout(2000);
+  }
+  throw new Error(`A-line table did not fully load. Partners found: ${partnerCount(best)}`);
+}
     await page.waitForTimeout(2000);
   }
   throw new Error(`A-line table did not fully load. Partners found: ${partnerCount(best)}`);
