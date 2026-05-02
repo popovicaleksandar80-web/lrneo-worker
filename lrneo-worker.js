@@ -20,6 +20,8 @@ function todayIso() {
 
 const GRACE_DAYS = parseInt(env('LRNEO_GRACE_DAYS', '10'), 10);
 const CAPTURE_PREV_MONTH = env('LRNEO_CAPTURE_PREV_MONTH', 'true') !== 'false';
+const BACKFILL_2026 = env('LRNEO_BACKFILL_2026', 'false') === 'true';
+const ONLY_USERNAME = clean(env('LRNEO_ONLY_USERNAME', ''));
 
 function isGracePeriod() {
   return new Date().getDate() <= GRACE_DAYS;
@@ -29,6 +31,10 @@ function isGracePeriod() {
 function prevMonthLastDay() {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+}
+
+function monthLastDayIso(year, monthIndex) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).toISOString().slice(0, 10);
 }
 
 // Hungarian month names shown in LR Neo date display
@@ -465,49 +471,63 @@ async function scrapeUser(headless, username, email, password) {
     const result  = await postSnapshot(rows, page.url(), username, todayIso());
     console.log(`[user: ${username}] ✓ rows=${rows.length} date=${result.date || todayIso()}`);
 
-    // ── Grace period: also capture previous month's final data ───────────────
-    // Runs every day 1-10 of the month. LR Neo defaults to new month,
-    // but previous month points may still change until ~day 10.
-    // We click ← to go back one month, scrape, and overwrite snap_date=last-day-of-prev-month.
-    if (CAPTURE_PREV_MONTH || isGracePeriod()) {
-      const prevDate = prevMonthLastDay();
-      const today    = new Date().getDate();
-      console.log(`[user: ${username}] Previous-month capture (day ${today}/${GRACE_DAYS}) — capturing ${prevDate}...`);
-      console.log(`  [prev-month] visible month before click: ${await visibleMonthText(page)}`);
+    // ── Historical capture ───────────────────────────────────────────────────
+    // Normal cron: capture previous month. Manual backfill: keep clicking ←
+    // month-by-month until January 2026 and save each month under its last day.
+    const now = new Date();
+    const shouldCaptureHistory = CAPTURE_PREV_MONTH || isGracePeriod() || BACKFILL_2026;
+    const firstMonthIdx = BACKFILL_2026 && now.getFullYear() === 2026 ? 0 : now.getMonth() - 1;
+    if (shouldCaptureHistory && firstMonthIdx >= 0 && now.getFullYear() === 2026) {
+      const today = now.getDate();
+      console.log(`[user: ${username}] Historical capture mode=${BACKFILL_2026 ? 'backfill_2026' : 'prev-month'} day=${today}/${GRACE_DAYS}`);
+      console.log(`  [history] visible month before clicks: ${await visibleMonthText(page)}`);
 
-      const prevMonthIdx  = new Date().getMonth() - 1; // 0-based, may be -1 in January
-      const prevMonthName = HU_MONTHS[(prevMonthIdx + 12) % 12];
-      const moved = await clickPrevMonth(page, prevMonthName);
-      if (moved) {
-        // Verify the month actually changed — page should now show previous month name
+      let lastSig = currentSig;
+      let savedHistory = 0;
+      for (let targetMonthIdx = now.getMonth() - 1; targetMonthIdx >= firstMonthIdx; targetMonthIdx--) {
+        const targetMonthName = HU_MONTHS[targetMonthIdx];
+        const snapDate = monthLastDayIso(2026, targetMonthIdx);
+        console.log(`[user: ${username}] History capture — navigating to ${targetMonthName} 2026, saving as ${snapDate}...`);
+
+        const moved = await clickPrevMonth(page, targetMonthName);
+        if (!moved) {
+          console.log(`[user: ${username}] ⚠ Could not navigate to ${targetMonthName} 2026 — stopping history capture`);
+          break;
+        }
+
         await page.waitForTimeout(1500);
         let monthChanged = false;
         for (let i = 0; i < 10; i++) {
-          console.log(`  [prev-month] visible month check ${i + 1}: ${await visibleMonthText(page)}`);
-          monthChanged = await pageHasMonth(page, prevMonthName);
+          console.log(`  [history] visible month check ${i + 1}: ${await visibleMonthText(page)}`);
+          monthChanged = await pageHasMonth(page, targetMonthName);
           if (monthChanged) break;
           await page.waitForTimeout(1000);
         }
-        console.log(`  [prev-month] month verification: looking for "${prevMonthName}" → ${monthChanged ? '✓ found' : '⚠ not found in page text'}`);
+        console.log(`  [history] month verification: looking for "${targetMonthName}" → ${monthChanged ? '✓ found' : '⚠ not found in page text'}`);
+        if (!monthChanged) {
+          await saveDebugScreenshot(page, `debug-aline-history-${snapDate}-not-verified.png`);
+          console.log(`[user: ${username}] ⚠ Month was not verified — skipping ${snapDate} to avoid wrong overwrite`);
+          break;
+        }
 
-        await saveDebugScreenshot(page, 'debug-aline-prev.png');
-        const prevRawRows = await waitForAlineRows(page, {
-          avoidSignature: currentSig,
-          minPartners: Math.max(1, currentPartners),
+        await saveDebugScreenshot(page, `debug-aline-history-${snapDate}.png`);
+        const monthRawRows = await waitForAlineRows(page, {
+          avoidSignature: lastSig,
+          minPartners: 1,
           timeoutMs: 70000,
         });
-        const prevRows    = cleanAndDedup(prevRawRows);
-        const prevPartners = partnerCount(prevRows);
-        if (!monthChanged && prevPartners <= currentPartners) {
-          await saveDebugScreenshot(page, 'debug-aline-prev-not-verified.png');
-          console.log(`[user: ${username}] ⚠ Previous-month screen/rows were not verified — skipping ${prevDate} snapshot to avoid overwriting it with current-month data`);
-          return { ok: true, rows: rows.length, prevSkipped: true };
+        const monthRows = cleanAndDedup(monthRawRows);
+        const monthPartners = partnerCount(monthRows);
+        if (!monthPartners) {
+          console.log(`[user: ${username}] ⚠ ${snapDate} has no partner rows — skipping snapshot`);
+          continue;
         }
-        await postSnapshot(prevRows, page.url(), username, prevDate);
-        console.log(`[user: ${username}] ✓ prev-month rows=${prevRows.length} partners=${prevPartners} saved as ${prevDate} (overwrite)${monthChanged ? '' : ' [accepted by changed rows]'}`);
-      } else {
-        console.log(`[user: ${username}] ⚠ Could not navigate to previous month — skipping grace-period snapshot`);
+        await postSnapshot(monthRows, page.url(), username, snapDate);
+        lastSig = rowSignature(monthRawRows);
+        savedHistory += 1;
+        console.log(`[user: ${username}] ✓ history rows=${monthRows.length} partners=${monthPartners} saved as ${snapDate} (overwrite)`);
       }
+      console.log(`[user: ${username}] History capture complete. saved=${savedHistory}`);
     }
 
     return { ok: true, rows: rows.length };
@@ -523,7 +543,13 @@ async function main() {
 
   // Multi-user mode: fetch all connected users from the app
   console.log('[worker] Fetching connected users...');
-  const users = await fetchUsersFromApp();
+  let users = await fetchUsersFromApp();
+  if (ONLY_USERNAME) {
+    const wanted = ONLY_USERNAME.toLowerCase();
+    const before = users.length;
+    users = users.filter(user => clean(user.username).toLowerCase() === wanted);
+    console.log(`[worker] Username filter "${ONLY_USERNAME}": ${users.length}/${before} user(s) matched`);
+  }
   console.log(`[worker] Found ${users.length} connected user(s)`);
 
   if (!users.length) {
