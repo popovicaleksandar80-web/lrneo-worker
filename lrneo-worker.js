@@ -53,8 +53,16 @@ async function visibleMonthText(page) {
 // Click the "previous month" arrow in LR Neo a-line view.
 // From the screenshot: top-right area shows  [május 2026] [📅] [<]
 // The < button is a rounded button immediately to the RIGHT of the date input.
-async function clickPrevMonth(page) {
+async function clickPrevMonth(page, expectedMonthName = '') {
   console.log('  [prev-month] searching for previous-month button...');
+
+  async function clickedAndVerified(label) {
+    await page.waitForTimeout(1800);
+    const visible = await visibleMonthText(page);
+    const ok = expectedMonthName ? await pageHasMonth(page, expectedMonthName) : true;
+    console.log(`  [prev-month] after ${label}: visible="${visible}" verified=${ok ? 'yes' : 'no'}`);
+    return ok;
+  }
 
   // ── Strategy 1: find the month text input/display, then get the next sibling button ──
   // LR Neo shows e.g. "május 2026" in a text field, < button is right next to it
@@ -63,24 +71,41 @@ async function clickPrevMonth(page) {
   for (const inp of dateInputs) {
     const val = await inp.inputValue().catch(() => '');
     if (monthPattern.test(val)) {
-      const clickedRightSibling = await inp.evaluate((input) => {
+      const candidates = await inp.evaluate((input) => {
         const inputRect = input.getBoundingClientRect();
-        const buttons = Array.from(document.querySelectorAll('button'))
-          .map((btn) => ({ btn, r: btn.getBoundingClientRect() }))
+        return Array.from(document.querySelectorAll('button'))
+          .map((btn, idx) => ({ idx, r: btn.getBoundingClientRect(), txt: (btn.innerText || btn.getAttribute('aria-label') || btn.className || '').toString() }))
           .filter((item) => item.r.width > 8 && item.r.height > 8)
           .filter((item) => Math.abs((item.r.top + item.r.height / 2) - (inputRect.top + inputRect.height / 2)) < 35)
-          .filter((item) => item.r.left >= inputRect.right - 4 && item.r.left <= inputRect.right + 120)
-          .sort((a, b) => a.r.left - b.r.left);
-        if (buttons.length) {
-          buttons[buttons.length - 1].btn.click();
-          return true;
-        }
-        return false;
+          .filter((item) => item.r.left >= inputRect.left - 20 && item.r.left <= inputRect.right + 160)
+          .sort((a, b) => b.r.left - a.r.left)
+          .map((item) => ({
+            idx: item.idx,
+            left: item.r.left,
+            top: item.r.top,
+            width: item.r.width,
+            height: item.r.height,
+            text: item.txt,
+          }));
       }).catch(() => false);
-      if (clickedRightSibling) {
-        console.log(`  [prev-month] clicked rightmost button beside month input: "${val}"`);
-        await page.waitForTimeout(3000);
-        return true;
+
+      if (Array.isArray(candidates) && candidates.length) {
+        console.log(`  [prev-month] candidates beside "${val}": ${candidates.map(c => `[${Math.round(c.left)},${Math.round(c.top)},${Math.round(c.width)}x${Math.round(c.height)} ${c.text}]`).join(' ')}`);
+        for (const c of candidates) {
+          await page.mouse.click(c.left + c.width / 2, c.top + c.height / 2);
+          if (await clickedAndVerified(`candidate ${Math.round(c.left)},${Math.round(c.top)}`)) return true;
+        }
+      }
+
+      const box = await inp.boundingBox().catch(() => null);
+      if (box) {
+        const y = box.y + box.height / 2;
+        for (const offset of [18, 36, 54, 72, 96, -22]) {
+          const x = box.x + box.width + offset;
+          console.log(`  [prev-month] coordinate probe x=${Math.round(x)} y=${Math.round(y)} offset=${offset}`);
+          await page.mouse.click(x, y);
+          if (await clickedAndVerified(`coordinate offset ${offset}`)) return true;
+        }
       }
     }
   }
@@ -114,8 +139,7 @@ async function clickPrevMonth(page) {
 
   if (clicked) {
     console.log('  [prev-month] found via browser evaluate (month text sibling)');
-    await page.waitForTimeout(3000);
-    return true;
+    if (await clickedAndVerified('browser evaluate')) return true;
   }
 
   // ── Strategy 3: aria-label ──
@@ -124,8 +148,7 @@ async function clickPrevMonth(page) {
     if (await btn.count() > 0) {
       console.log(`  [prev-month] found via aria-label: ${label}`);
       await btn.click();
-      await page.waitForTimeout(3000);
-      return true;
+      if (await clickedAndVerified(`aria-label ${label}`)) return true;
     }
   }
 
@@ -154,8 +177,7 @@ async function clickPrevMonth(page) {
 
   if (svgClicked) {
     console.log('  [prev-month] found via SVG path analysis');
-    await page.waitForTimeout(3000);
-    return true;
+    if (await clickedAndVerified('SVG path analysis')) return true;
   }
 
   // ── Strategy 5: position-based fallback — rightmost button in top 120px strip ──
@@ -184,8 +206,7 @@ async function clickPrevMonth(page) {
 
   if (posClicked) {
     console.log('  [prev-month] found via position-based fallback (top-right area)');
-    await page.waitForTimeout(3000);
-    return true;
+    if (await clickedAndVerified('position fallback')) return true;
   }
 
   console.log('  [prev-month] ⚠ all strategies failed — no previous-month button found');
@@ -454,11 +475,11 @@ async function scrapeUser(headless, username, email, password) {
       console.log(`[user: ${username}] Previous-month capture (day ${today}/${GRACE_DAYS}) — capturing ${prevDate}...`);
       console.log(`  [prev-month] visible month before click: ${await visibleMonthText(page)}`);
 
-      const moved = await clickPrevMonth(page);
+      const prevMonthIdx  = new Date().getMonth() - 1; // 0-based, may be -1 in January
+      const prevMonthName = HU_MONTHS[(prevMonthIdx + 12) % 12];
+      const moved = await clickPrevMonth(page, prevMonthName);
       if (moved) {
         // Verify the month actually changed — page should now show previous month name
-        const prevMonthIdx  = new Date().getMonth() - 1; // 0-based, may be -1 in January
-        const prevMonthName = HU_MONTHS[(prevMonthIdx + 12) % 12];
         await page.waitForTimeout(1500);
         let monthChanged = false;
         for (let i = 0; i < 10; i++) {
