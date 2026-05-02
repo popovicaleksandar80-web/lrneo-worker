@@ -144,8 +144,22 @@ function cleanAndDedup(rows) {
   }
   return result;
 }
-
 async function waitForAlineRows(page) {
+  let best = [];
+  const until = Date.now() + 30000;
+  while (Date.now() < until) {
+    await dismissCookiePopup(page);
+    const rows = usefulRows(await extractAllRows(page));
+    if (rows.length > best.length) best = rows;
+    const pc = partnerCount(rows);
+    console.log(`  [poll] useful=${rows.length} partners=${pc}`);
+    if (best.length > 0 && rows.length === best.length) return best;
+    await page.waitForTimeout(2000);
+  }
+  console.log(`  [poll] returning best=${best.length} rows`);
+  return best;
+}
+
   let best = [];
   const until = Date.now() + 90000;
   while (Date.now() < until) {
