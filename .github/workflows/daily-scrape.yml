@@ -2,7 +2,7 @@ name: LR Neo Daily Scrape
 
 on:
   schedule:
-    - cron: '30 5 * * *'
+    - cron: '0 16 * * *'   # 18:00 CEST (UTC+2) — daily snapshot at 6pm local
   workflow_dispatch:
 
 jobs:
@@ -38,5 +38,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshot
-          path: debug-aline.png
+          path: debug-aline*.png
           if-no-files-found: ignore
