@@ -1,0 +1,33 @@
+name: LR Neo Daily Scrape
+
+on:
+  schedule:
+    # Runs at 06:00 UTC = 08:00 CEST (Central European Summer Time)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    # Manual trigger from GitHub Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Playwright
+        run: |
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Run LR Neo scrape worker
+        env:
+          LRNEO_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
+          LRNEO_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
+        run: node scripts/lrneo-gh-worker.js
