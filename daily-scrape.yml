@@ -2,8 +2,9 @@ name: LR Neo Daily Scrape
 
 on:
   schedule:
-    # Runs at 06:00 UTC = 08:00 CEST (Central European Summer Time)
-    - cron: '0 6 * * *'
+    # GitHub cron is UTC. These cover both CET and CEST; the guard below
+    # lets the worker run only at 08:00, 12:00 and 16:00 Europe/Belgrade.
+    - cron: '0 6,7,10,11,14,15 * * *'
   workflow_dispatch:
     # Manual trigger from GitHub Actions tab
 
@@ -21,12 +22,26 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Check Belgrade refresh window
+        id: refresh_window
+        shell: bash
+        run: |
+          hour="$(TZ=Europe/Belgrade date +%H)"
+          if [[ "$hour" == "08" || "$hour" == "12" || "$hour" == "16" ]]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Skip LR Neo scrape at ${hour}:00 Europe/Belgrade"
+          fi
+
       - name: Install Playwright
+        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
         run: |
           npm install playwright
           npx playwright install chromium --with-deps
 
       - name: Run LR Neo scrape worker
+        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
         env:
           LRNEO_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
           LRNEO_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
