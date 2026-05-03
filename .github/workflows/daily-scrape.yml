@@ -2,8 +2,11 @@ name: LR Neo Daily Scrape
 
 on:
   schedule:
-    - cron: '0 16 * * *'   # 18:00 CEST (UTC+2) — daily snapshot at 6pm local
+    # GitHub cron is UTC. These cover both CET and CEST; the guard below
+    # lets the worker run only at 08:00, 12:00 and 16:00 Europe/Belgrade.
+    - cron: '0 6,7,10,11,14,15 * * *'
   workflow_dispatch:
+    # Manual trigger from GitHub Actions tab
 
 jobs:
   scrape:
@@ -11,32 +14,35 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Check Belgrade refresh window
+        id: refresh_window
+        shell: bash
+        run: |
+          hour="$(TZ=Europe/Belgrade date +%H)"
+          if [[ "$hour" == "08" || "$hour" == "12" || "$hour" == "16" ]]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Skip LR Neo scrape at ${hour}:00 Europe/Belgrade"
+          fi
 
-      - name: Install Chromium
-        run: npx playwright install chromium --with-deps
+      - name: Install Playwright
+        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
+        run: |
+          npm install playwright
+          npx playwright install chromium --with-deps
 
-      - name: Run LR Neo worker
+      - name: Run LR Neo scrape worker
+        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
         env:
-          LRNEO_EMAIL: ${{ secrets.LRNEO_EMAIL }}
-          LRNEO_PASSWORD: ${{ secrets.LRNEO_PASSWORD }}
-          LR_APP_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
-          LR_APP_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
-          LR_APP_USERNAME: ${{ secrets.LR_APP_USERNAME }}
-          LRNEO_HEADLESS: 'true'
-        run: node lrneo-worker.js
-
-      - name: Upload debug screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshot
-          path: debug-aline*.png
-          if-no-files-found: ignore
+          LRNEO_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
+          LRNEO_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
+        run: node scripts/lrneo-gh-worker.js
