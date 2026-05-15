@@ -132,6 +132,65 @@ async function readPointsNearHu(page, lrId) {
   }, lrId);
 }
 
+async function readOsszpontFromContact(page, lrId) {
+  return page.evaluate((partnerId) => {
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const normalize = (value) => clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const exactId = clean(partnerId).toUpperCase();
+    const bodyText = clean(document.body && document.body.innerText);
+    if (!bodyText.toUpperCase().includes(exactId)) {
+      return { ok: false, error: 'detail_hu_not_visible' };
+    }
+    const parseNumbers = (value) => {
+      const text = clean(value)
+        .replace(/\b(HU|DE)\d+\b/gi, ' ')
+        .replace(/\b20\d\d[-./]\d\d[-./]\d\d\b/g, ' ');
+      const values = [];
+      for (const match of text.match(/\d[\d\s.,]*/g) || []) {
+        const normalized = match.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
+        const number = Number(normalized);
+        if (Number.isFinite(number) && number > 0 && number < 999999) values.push(number);
+      }
+      return values;
+    };
+    const hasOsszpont = (value) => /ossz\s*pont|osszpont|osszes\s*pont|total\s*points?/i.test(normalize(value));
+    const candidates = [];
+
+    for (const element of Array.from(document.querySelectorAll('td, th, div, span, strong, p, li, label'))) {
+      const text = clean(element.innerText || element.textContent);
+      if (!text || text.length > 250 || !hasOsszpont(text)) continue;
+      const sameTextNumbers = parseNumbers(text);
+      for (const number of sameTextNumbers) {
+        candidates.push({ points: number, score: 300, text: text.slice(0, 160) });
+      }
+
+      const parent = element.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children);
+        const index = siblings.indexOf(element);
+        for (let i = Math.max(0, index); i < Math.min(siblings.length, index + 4); i += 1) {
+          const siblingText = clean(siblings[i].innerText || siblings[i].textContent);
+          if (!siblingText || siblingText.length > 180) continue;
+          for (const number of parseNumbers(siblingText)) {
+            candidates.push({ points: number, score: 250 - Math.abs(i - index), text: siblingText.slice(0, 160) });
+          }
+        }
+        const parentText = clean(parent.innerText || parent.textContent);
+        if (parentText.length <= 500 && hasOsszpont(parentText)) {
+          for (const number of parseNumbers(parentText)) {
+            candidates.push({ points: number, score: 200, text: parentText.slice(0, 160) });
+          }
+        }
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score || b.points - a.points);
+    return candidates.length
+      ? { ok: true, total_points: candidates[0].points, source: 'osszpont_label', debug: candidates.slice(0, 5) }
+      : { ok: false, error: 'osszpont_not_found' };
+  }, lrId);
+}
+
 async function readPartner(page, partner) {
   const lrId = clean(partner.lr_partner_id).toUpperCase();
   if (!lrId) return { ...partner, ok: false, error: 'missing_lr_partner_id' };
@@ -147,7 +206,6 @@ async function readPartner(page, partner) {
   await page.waitForTimeout(2200);
   await page.screenshot({ path: `debug-team-${lrId}-search.png`, fullPage: true }).catch(() => {});
 
-  let points = await readPointsNearHu(page, lrId);
   const result = page.getByText(lrId, { exact: false }).last();
   if (await result.count().catch(() => 0)) {
     await Promise.all([
@@ -156,9 +214,10 @@ async function readPartner(page, partner) {
     ]);
     await page.waitForTimeout(2200);
     await page.screenshot({ path: `debug-team-${lrId}-detail.png`, fullPage: true }).catch(() => {});
-    const detailPoints = await readPointsNearHu(page, lrId);
-    if (detailPoints.ok) points = detailPoints;
   }
+
+  let points = await readOsszpontFromContact(page, lrId);
+  if (!points.ok) points = await readPointsNearHu(page, lrId);
 
   if (!points.ok || !points.total_points) {
     return { ...partner, ok: false, error: points.error || 'points_not_found' };
@@ -200,6 +259,9 @@ async function runUser(user) {
     throw new Error(`suspicious_same_team_points: ${successful.length} partners all read as ${Array.from(uniqueValues)[0]} P`);
   }
   const saved = await appPost('lrneo.ingest_team_points', { username: user.username, results: successful });
+  if (partners.length > 0 && Number(saved.saved || 0) === 0) {
+    throw new Error(`team_points_saved_zero: checked=${partners.length} found=${successful.length}`);
+  }
   return { ok: true, checked: partners.length, found: successful.length, saved: saved.saved || 0, results };
 }
 
@@ -217,7 +279,7 @@ async function main() {
     }
   }
   console.log(JSON.stringify({ ok: true, results }));
-  if (!results.some((result) => result.ok)) process.exit(1);
+  if (!results.some((result) => result.ok && Number(result.saved || 0) > 0)) process.exit(1);
 }
 
 main().catch((error) => {
