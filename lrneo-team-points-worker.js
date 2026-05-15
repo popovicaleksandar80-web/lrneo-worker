@@ -133,6 +133,58 @@ async function readPointsNearHu(page, lrId) {
   }, lrId);
 }
 
+async function readPointsFromHuRow(page, lrId) {
+  return page.evaluate((partnerId) => {
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const exactId = clean(partnerId).toUpperCase();
+    const numberFromCell = (value) => {
+      const escaped = exactId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const text = clean(value)
+        .replace(new RegExp(escaped, 'gi'), ' ')
+        .replace(/\b(HU|DE)\d+\b/gi, ' ')
+        .replace(/\b20\d\d[-./]\d\d[-./]\d\d\b/g, ' ')
+        .replace(/\b\d\d[-./]\d\d[-./]\d\d\b/g, ' ');
+      const match = text.match(/-?\d[\d\s.,]*/);
+      if (!match) return null;
+      const normalized = match[0].replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
+      const number = Number(normalized);
+      return Number.isFinite(number) && number > -999999 && number < 999999 ? number : null;
+    };
+    const cellText = (cell) => clean(cell.innerText || cell.textContent || cell.value || '');
+    const rowSelectors = 'tr, [role="row"], .ag-row, .mat-row, .datatable-row';
+    const cellSelectors = 'td, th, [role="gridcell"], [role="columnheader"], .ag-cell, .mat-cell, .datatable-body-cell, div, span';
+    const rows = Array.from(document.querySelectorAll(rowSelectors));
+
+    for (const row of rows) {
+      const rowText = cellText(row);
+      if (!rowText.toUpperCase().includes(exactId)) continue;
+      const rect = row.getBoundingClientRect();
+      if (rect.width < 20 || rect.height < 8) continue;
+      const cells = Array.from(row.querySelectorAll(cellSelectors))
+        .filter((cell) => {
+          const box = cell.getBoundingClientRect();
+          return box.width > 4 && box.height > 4;
+        })
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+        .map(cellText)
+        .filter(Boolean);
+      const compact = [];
+      for (const text of cells) {
+        if (compact[compact.length - 1] !== text) compact.push(text);
+      }
+      const idIndex = compact.findIndex((text) => text.toUpperCase().includes(exactId));
+      if (idIndex < 0) continue;
+      for (let i = idIndex + 1; i < compact.length; i += 1) {
+        const number = numberFromCell(compact[i]);
+        if (Number.isFinite(number)) {
+          return { ok: true, total_points: number, source: 'hu_row', debug: compact.slice(idIndex, idIndex + 8) };
+        }
+      }
+    }
+    return { ok: false, error: 'hu_row_points_not_found' };
+  }, lrId);
+}
+
 async function readOsszpontFromContact(page, lrId) {
   return page.evaluate((partnerId) => {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -217,7 +269,8 @@ async function readPartner(page, partner) {
     await page.screenshot({ path: `debug-team-${lrId}-detail.png`, fullPage: true }).catch(() => {});
   }
 
-  let points = await readOsszpontFromContact(page, lrId);
+  let points = await readPointsFromHuRow(page, lrId);
+  if (!points.ok) points = await readOsszpontFromContact(page, lrId);
   if (!points.ok) points = await readPointsNearHu(page, lrId);
 
   if (!points.ok || !Number.isFinite(Number(points.total_points))) {
