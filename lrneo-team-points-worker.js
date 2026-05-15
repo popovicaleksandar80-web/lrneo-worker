@@ -45,7 +45,8 @@ async function dismissCookiePopup(page) {
 async function openAline(page, user) {
   await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 });
   const body = await page.locator('body').innerText({ timeout: 15000 }).catch(() => '');
-  if (!/PSZ|Osszpont|Partner/i.test(body)) {
+  const passwordVisible = await page.locator('input[name="password"], input#password, input[type="password"]').first().isVisible().catch(() => false);
+  if (passwordVisible || !/Sales Report|PSZ|Osszpont|Partner keres/i.test(body)) {
     const username = page.locator('input[name="username"], input#username, input[type="email"], input[name="email"]').first();
     const password = page.locator('input[name="password"], input#password, input[type="password"]').first();
     await username.waitFor({ state: 'visible', timeout: 30000 });
