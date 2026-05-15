@@ -1,0 +1,43 @@
+name: LR Neo Team Points
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'App username to refresh team LR Neo points'
+        required: true
+        default: ''
+
+jobs:
+  team-points:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run LR Neo team points worker
+        env:
+          LR_APP_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
+          LR_APP_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
+          LRNEO_ONLY_USERNAME: ${{ github.event.inputs.username }}
+          LRNEO_HEADLESS: 'true'
+        run: node lrneo-team-points-worker.js
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: team-points-debug
+          path: debug-team-*.png
+          if-no-files-found: ignore
