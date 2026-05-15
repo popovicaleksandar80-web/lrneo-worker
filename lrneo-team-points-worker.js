@@ -94,14 +94,14 @@ async function readPointsNearHu(page, lrId) {
       const text = clean(value)
         .replace(new RegExp(escaped, 'gi'), ' ')
         .replace(/\b(HU|DE)\d+\b/gi, ' ');
-      const matches = text.match(/\d[\d\s.,]*/g) || [];
+      const matches = text.match(/-?\d[\d\s.,]*/g) || [];
       const values = [];
       for (const match of matches) {
         const normalized = match.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
         const number = Number(normalized);
-        if (Number.isFinite(number) && number > 0 && number < 999999) values.push(number);
+        if (Number.isFinite(number) && number > -999999 && number < 999999) values.push(number);
       }
-      return values.length ? values[values.length - 1] : 0;
+      return values.length ? values[values.length - 1] : null;
     };
 
     const nodes = [];
@@ -123,7 +123,7 @@ async function readPointsNearHu(page, lrId) {
     for (const node of Array.from(new Set(nodes))) {
       const text = clean(node.innerText || node.textContent);
       const points = parsePoints(text);
-      if (points) candidates.push({ points, score: 1000 - text.length, text: text.slice(0, 160) });
+      if (Number.isFinite(points)) candidates.push({ points, score: 1000 - text.length, text: text.slice(0, 160) });
     }
     candidates.sort((a, b) => b.score - a.score || b.points - a.points);
     return candidates.length
@@ -146,14 +146,14 @@ async function readOsszpontFromContact(page, lrId) {
         .replace(/\b(HU|DE)\d+\b/gi, ' ')
         .replace(/\b20\d\d[-./]\d\d[-./]\d\d\b/g, ' ');
       const values = [];
-      for (const match of text.match(/\d[\d\s.,]*/g) || []) {
+      for (const match of text.match(/-?\d[\d\s.,]*/g) || []) {
         const normalized = match.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
         const number = Number(normalized);
-        if (Number.isFinite(number) && number > 0 && number < 999999) values.push(number);
+        if (Number.isFinite(number) && number > -999999 && number < 999999) values.push(number);
       }
       return values;
     };
-    const hasOsszpont = (value) => /ossz\s*pont|osszpont|osszes\s*pont|total\s*points?/i.test(normalize(value));
+    const hasOsszpont = (value) => /osz\s*pont|ossz\s*pont|osszpont|osszes\s*pont|total\s*points?/i.test(normalize(value));
     const candidates = [];
 
     for (const element of Array.from(document.querySelectorAll('td, th, div, span, strong, p, li, label'))) {
@@ -219,7 +219,7 @@ async function readPartner(page, partner) {
   let points = await readOsszpontFromContact(page, lrId);
   if (!points.ok) points = await readPointsNearHu(page, lrId);
 
-  if (!points.ok || !points.total_points) {
+  if (!points.ok || !Number.isFinite(Number(points.total_points))) {
     return { ...partner, ok: false, error: points.error || 'points_not_found' };
   }
   return { ...partner, ok: true, total_points: points.total_points };
@@ -253,8 +253,8 @@ async function runUser(user) {
     await browser.close();
   }
 
-  const successful = results.filter((result) => result.ok && Number(result.total_points || 0) > 0);
-  const uniqueValues = new Set(successful.map((result) => Number(result.total_points || 0)));
+  const successful = results.filter((result) => result.ok && Number.isFinite(Number(result.total_points)));
+  const uniqueValues = new Set(successful.map((result) => Number(result.total_points)));
   if (successful.length >= 3 && uniqueValues.size === 1) {
     throw new Error(`suspicious_same_team_points: ${successful.length} partners all read as ${Array.from(uniqueValues)[0]} P`);
   }
