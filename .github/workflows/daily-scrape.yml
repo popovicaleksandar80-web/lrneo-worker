@@ -19,6 +19,10 @@ on:
         description: 'Optional app username to scrape only one connected LR Neo account'
         required: false
         default: ''
+      mode:
+        description: 'Worker mode: snapshot or team_points'
+        required: false
+        default: 'snapshot'
 
 jobs:
   scrape:
@@ -63,6 +67,7 @@ jobs:
           LRNEO_HEADLESS: 'true'
           LRNEO_BACKFILL_2026: ${{ github.event.inputs.backfill_2026 || 'false' }}
           LRNEO_ONLY_USERNAME: ${{ github.event.inputs.username || '' }}
+          LRNEO_MODE: ${{ github.event.inputs.mode || 'snapshot' }}
         run: node lrneo-worker.js
 
       - name: Upload debug screenshot
