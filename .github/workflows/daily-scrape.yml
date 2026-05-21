@@ -2,7 +2,9 @@ name: LR Neo Daily Scrape
 
 on:
   schedule:
-    - cron: '0 6,7,10,11,14,15 * * *'
+    # GitHub cron is UTC. Run hourly through the Belgrade business day; the
+    # guard below keeps only 08:00-20:00 Europe/Belgrade.
+    - cron: '0 6-18 * * *'
   workflow_dispatch:
     inputs:
       backfill_2026:
@@ -36,10 +38,11 @@ jobs:
         shell: bash
         run: |
           hour="$(TZ=Europe/Belgrade date +%H)"
-          if [[ "$hour" == "08" || "$hour" == "12" || "$hour" == "16" ]]; then
+          if (( 10#$hour >= 8 && 10#$hour <= 20 )); then
             echo "run_worker=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Skip LR Neo scrape at ${hour}:00 Europe/Belgrade"
           fi
       - name: Install dependencies
         if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'

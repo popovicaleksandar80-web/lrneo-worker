@@ -1,6 +1,10 @@
 name: LR Neo Team Points
 
 on:
+  schedule:
+    # GitHub cron is UTC. These cover 20:30 Europe/Belgrade in CET/CEST; the
+    # guard below runs the worker only at the local 20:00 hour.
+    - cron: '30 18,19 * * *'
   workflow_dispatch:
     inputs:
       username:
@@ -20,17 +24,32 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Check Belgrade team refresh window
+        id: team_refresh_window
+        shell: bash
+        run: |
+          hour="$(TZ=Europe/Belgrade date +%H)"
+          if (( 10#$hour == 20 )); then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Skip LR Neo team refresh at ${hour}:00 Europe/Belgrade"
+          fi
+
       - name: Install dependencies
+        if: github.event_name != 'schedule' || steps.team_refresh_window.outputs.run_worker == 'true'
         run: npm install
 
       - name: Install Chromium
+        if: github.event_name != 'schedule' || steps.team_refresh_window.outputs.run_worker == 'true'
         run: npx playwright install chromium --with-deps
 
       - name: Run LR Neo team points worker
+        if: github.event_name != 'schedule' || steps.team_refresh_window.outputs.run_worker == 'true'
         env:
           LR_APP_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
           LR_APP_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
-          LRNEO_ONLY_USERNAME: ${{ github.event.inputs.username }}
+          LRNEO_ONLY_USERNAME: ${{ github.event.inputs.username || '' }}
           LRNEO_HEADLESS: 'true'
         run: node lrneo-team-points-worker.js
 
