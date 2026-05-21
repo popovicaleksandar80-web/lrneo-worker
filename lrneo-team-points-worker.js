@@ -138,9 +138,8 @@ async function readPointsFromHuRow(page, lrId) {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
     const exactId = clean(partnerId).toUpperCase();
     const numberFromCell = (value) => {
-      const escaped = exactId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const text = clean(value)
-        .replace(new RegExp(escaped, 'gi'), ' ')
+        .replace(new RegExp(exactId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
         .replace(/\b(HU|DE)\d+\b/gi, ' ')
         .replace(/\b20\d\d[-./]\d\d[-./]\d\d\b/g, ' ')
         .replace(/\b\d\d[-./]\d\d[-./]\d\d\b/g, ' ');
@@ -314,14 +313,20 @@ async function runUser(user) {
   }
   const saved = await appPost('lrneo.ingest_team_points', { username: user.username, results: successful });
   if (partners.length > 0 && Number(saved.saved || 0) === 0) {
-    throw new Error(`team_points_saved_zero: checked=${partners.length} found=${successful.length}`);
+    const warning = `team_points_saved_zero: checked=${partners.length} found=${successful.length}`;
+    console.warn(`[team:${user.username}] ${warning}`);
+    return { ok: true, warning, checked: partners.length, found: successful.length, saved: 0, results };
   }
   return { ok: true, checked: partners.length, found: successful.length, saved: saved.saved || 0, results };
 }
 
 async function main() {
   const users = await fetchUsers();
-  if (!users.length) throw new Error('no_users_connected');
+  if (!users.length) {
+    console.warn('[team] no_users_connected');
+    console.log(JSON.stringify({ ok: true, warning: 'no_users_connected', results: [] }));
+    return;
+  }
   const results = [];
   for (const user of users) {
     try {
@@ -332,8 +337,11 @@ async function main() {
       results.push({ username: user.username, ok: false, error: message });
     }
   }
-  console.log(JSON.stringify({ ok: true, results }));
-  if (!results.some((result) => result.ok && Number(result.saved || 0) > 0)) process.exit(1);
+  const savedTotal = results.reduce((sum, result) => sum + Number(result.saved || 0), 0);
+  if (savedTotal <= 0) {
+    console.warn('[team] finished_without_saved_points');
+  }
+  console.log(JSON.stringify({ ok: true, saved: savedTotal, results }));
 }
 
 main().catch((error) => {

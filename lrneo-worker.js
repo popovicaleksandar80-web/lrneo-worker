@@ -22,6 +22,7 @@ const GRACE_DAYS = parseInt(env('LRNEO_GRACE_DAYS', '10'), 10);
 const CAPTURE_PREV_MONTH = env('LRNEO_CAPTURE_PREV_MONTH', 'true') !== 'false';
 const BACKFILL_2026 = env('LRNEO_BACKFILL_2026', 'false') === 'true';
 const ONLY_USERNAME = clean(env('LRNEO_ONLY_USERNAME', ''));
+const MODE = clean(env('LRNEO_MODE', 'snapshot')) || 'snapshot';
 
 function isGracePeriod() {
   return new Date().getDate() <= GRACE_DAYS;
@@ -236,6 +237,36 @@ async function fetchUsersFromApp() {
   return Array.isArray(data.users) ? data.users : [];
 }
 
+async function fetchTeamPartners(username) {
+  const ingestUrl = required('LR_APP_INGEST_URL');
+  const token     = required('LR_APP_INGEST_TOKEN');
+  const response  = await fetch(ingestUrl, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'lrneo.worker_get_team_partners', token, username }),
+  });
+  const text = await response.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch (_) {}
+  if (!response.ok || !data.ok) throw new Error(`worker_get_team_partners failed: ${text.slice(0, 400)}`);
+  return Array.isArray(data.partners) ? data.partners : [];
+}
+
+async function postTeamPoints(username, results) {
+  const ingestUrl = required('LR_APP_INGEST_URL');
+  const token     = required('LR_APP_INGEST_TOKEN');
+  const response  = await fetch(ingestUrl, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'lrneo.ingest_team_points', token, username, results }),
+  });
+  const text = await response.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch (_) {}
+  if (!response.ok || !data.ok) throw new Error(`ingest_team_points failed: ${text.slice(0, 400)}`);
+  return data;
+}
+
 // ─── Cookie popup ─────────────────────────────────────────────────────────────
 
 async function dismissCookiePopup(page) {
@@ -418,6 +449,191 @@ async function waitForAlineRows(page, opts = {}) {
   return bestAllowed.length ? bestAllowed : best;
 }
 
+async function openAline(page, email, password) {
+  await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await loginIfNeeded(page, email, password);
+  await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {});
+  await page.waitForTimeout(2500);
+  await dismissCookiePopup(page);
+}
+
+function parsePointNumber(value) {
+  const raw = clean(value).replace(/\u00a0/g, ' ');
+  if (!raw) return 0;
+  const matches = raw.match(/\d[\d\s.,]*/g) || [];
+  let best = 0;
+  for (const match of matches) {
+    const normalized = match.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
+    const num = Number(normalized);
+    if (Number.isFinite(num) && num > best) best = num;
+  }
+  return best;
+}
+
+async function extractTotalPointsFromPartnerDetail(page, lrPartnerId) {
+  await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  return page.evaluate((partnerId) => {
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const parseNum = (value) => {
+      const matches = clean(value).match(/\d[\d\s.,]*/g) || [];
+      let best = 0;
+      for (const match of matches) {
+        const normalized = match.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
+        const num = Number(normalized);
+        if (Number.isFinite(num) && num > best) best = num;
+      }
+      return best;
+    };
+    const labelRe = /(összpont|osszpont|total\s*points?|ukupno|gesamt|pontok|points?)/i;
+    const badRe = /(psz|partner|hu\d+|datum|date|belép|belep|entry|active|line|telefon|email)/i;
+    const candidates = [];
+
+    for (const el of Array.from(document.querySelectorAll('td, th, div, span, strong, p, li'))) {
+      const text = clean(el.innerText || el.textContent);
+      if (!text || text.length > 220) continue;
+      const num = parseNum(text);
+      if (!num) continue;
+      const lower = text.toLowerCase();
+      let score = 0;
+      if (labelRe.test(text)) score += 100;
+      if (/^\d[\d\s.,]*$/.test(text)) score += 20;
+      if (badRe.test(text)) score -= 80;
+      if (String(partnerId || '') && text.includes(String(partnerId))) score -= 100;
+      const parentText = clean(el.parentElement && (el.parentElement.innerText || el.parentElement.textContent));
+      if (labelRe.test(parentText)) score += 60;
+      if (badRe.test(parentText) && !labelRe.test(parentText)) score -= 30;
+      if (num >= 0 && num <= 999999) candidates.push({ num, score, text: text.slice(0, 120) });
+      void lower;
+    }
+    candidates.sort((a, b) => b.score - a.score || b.num - a.num);
+    return candidates.length ? { ok: true, total_points: candidates[0].num, debug: candidates.slice(0, 5) } : { ok: false, error: 'points_not_found' };
+  }, lrPartnerId);
+}
+
+async function findSearchInput(page) {
+  const locators = [
+    'input[placeholder*="Partner"]',
+    'input[placeholder*="Keres"]',
+    'input[placeholder*="Search"]',
+    'input[type="search"]',
+    'input[type="text"]',
+    'input:not([type])',
+  ];
+  for (const selector of locators) {
+    const locator = page.locator(selector).first();
+    if (await locator.count().catch(() => 0)) {
+      const visible = await locator.isVisible().catch(() => false);
+      if (visible) return locator;
+    }
+  }
+  throw new Error('search_input_not_found');
+}
+
+async function extractSearchResultPoints(page, lrPartnerId) {
+  await page.waitForTimeout(900);
+  return page.evaluate((partnerId) => {
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const exactId = clean(partnerId).toUpperCase();
+    const escapedId = exactId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const parsePoint = (value) => {
+      const text = clean(value)
+        .replace(new RegExp(escapedId, 'gi'), ' ')
+        .replace(/\b(HU|DE)\d+\b/gi, ' ');
+      const matches = text.match(/\d[\d\s.,]*/g) || [];
+      const values = [];
+      for (const match of matches) {
+        const normalized = match.replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
+        const num = Number(normalized);
+        if (Number.isFinite(num) && num > 0 && num < 999999) values.push(num);
+      }
+      return values.length ? values[values.length - 1] : 0;
+    };
+    const containers = [];
+
+    for (const el of Array.from(document.querySelectorAll('tr, [role="row"], td, div, span, a, button, li'))) {
+      const elText = clean(el.innerText || el.textContent);
+      if (!elText.toUpperCase().includes(exactId)) continue;
+      const row = el.closest && (el.closest('tr') || el.closest('[role="row"]'));
+      if (row) containers.push(row);
+      let node = el;
+      for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+        const text = clean(node.innerText || node.textContent);
+        if (!text || text.length > 500 || !text.toUpperCase().includes(exactId)) continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 10) continue;
+        containers.push(node);
+      }
+    }
+
+    const candidates = [];
+    for (const node of Array.from(new Set(containers))) {
+      const rowText = clean(node.innerText || node.textContent);
+      const rowPoint = parsePoint(rowText);
+      if (rowPoint) {
+        candidates.push({ points: rowPoint, index: 999, text: rowText.slice(0, 160), row: rowText.slice(0, 220) });
+      }
+      const children = Array.from(node.querySelectorAll('td, [role="gridcell"], span, div, a, button'))
+        .map((child) => ({
+          text: clean(child.innerText || child.textContent),
+          left: child.getBoundingClientRect().left,
+        }))
+        .filter((item) => item.text && item.text.length <= 120)
+        .sort((a, b) => a.left - b.left);
+      const parts = children.length ? children.map((item) => item.text) : [clean(node.innerText || node.textContent)];
+      for (let i = 0; i < parts.length; i += 1) {
+        const text = parts[i];
+        if (!text || text.toUpperCase() === exactId || /^(HU|DE)\d{4,}/i.test(text)) continue;
+        const points = parsePoint(text);
+        if (!points) continue;
+        candidates.push({ points, index: i, text, row: parts.slice(0, 5).join(' | ') });
+      }
+    }
+    candidates.sort((a, b) => b.index - a.index || b.points - a.points);
+    return candidates.length
+      ? { ok: true, total_points: candidates[0].points, source: 'search_result', debug: candidates.slice(0, 3) }
+      : { ok: false, error: 'search_result_points_not_found' };
+  }, lrPartnerId);
+}
+
+async function fetchPartnerTotalPoints(page, partner) {
+  const lrId = clean(partner.lr_partner_id).toUpperCase();
+  if (!lrId) return { ...partner, ok: false, error: 'missing_lr_partner_id' };
+
+  await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+  await dismissCookiePopup(page);
+
+  const search = await findSearchInput(page);
+  await search.click({ timeout: 10000 }).catch(() => {});
+  await search.fill('');
+  await search.fill(lrId);
+  await page.waitForTimeout(1600);
+
+  const rowPoints = await extractSearchResultPoints(page, lrId);
+  if (rowPoints.ok && rowPoints.total_points) {
+    return { ...partner, ok: true, total_points: rowPoints.total_points, source: rowPoints.source };
+  }
+
+  const exact = page.getByText(lrId, { exact: false }).last();
+  if (!(await exact.count().catch(() => 0))) {
+    await saveDebugScreenshot(page, `debug-team-${lrId}-not-found.png`);
+    return { ...partner, ok: false, error: 'partner_not_found' };
+  }
+  await Promise.all([
+    page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {}),
+    exact.click({ timeout: 15000 }),
+  ]);
+  await page.waitForTimeout(2000);
+  const extracted = await extractTotalPointsFromPartnerDetail(page, lrId);
+  if (!extracted.ok || !extracted.total_points) {
+    await saveDebugScreenshot(page, `debug-team-${lrId}-no-points.png`);
+    return { ...partner, ok: false, error: extracted.error || 'points_not_found' };
+  }
+  return { ...partner, ok: true, total_points: extracted.total_points };
+}
+
 // ─── Post snapshot ────────────────────────────────────────────────────────────
 
 async function postSnapshot(rows, pageUrl, username, snapDate) {
@@ -441,6 +657,9 @@ async function postSnapshot(rows, pageUrl, username, snapDate) {
   try { data = JSON.parse(text); } catch (_) {}
   if (!response.ok || data.ok === false) {
     throw new Error(`Ingest failed: HTTP ${response.status} ${text}`);
+  }
+  if (data.preserved_existing) {
+    throw new Error(`Ingest preserved existing snapshot for ${snapDate || todayIso()}: ${data.reason || 'incoming snapshot was not usable'}`);
   }
   console.log(`  [ingest] date=${snapDate || todayIso()} rows=${rows.length} partners=${partnerCount(rows)} response=${text.slice(0, 300)}`);
   return data;
@@ -467,7 +686,11 @@ async function scrapeUser(headless, username, email, password) {
     const rawRows = await waitForAlineRows(page);
     const rows    = cleanAndDedup(rawRows);
     const currentSig = rowSignature(rawRows);
-    const currentPartners = partnerCount(rawRows);
+    const currentPartners = partnerCount(rows);
+    if (currentPartners <= 0) {
+      await saveDebugScreenshot(page, 'debug-aline-current-no-partners.png');
+      throw new Error(`current_snapshot_has_no_partners: rows=${rows.length}`);
+    }
     const result  = await postSnapshot(rows, page.url(), username, todayIso());
     console.log(`[user: ${username}] ✓ rows=${rows.length} date=${result.date || todayIso()}`);
 
@@ -542,6 +765,7 @@ async function main() {
   const headless = env('LRNEO_HEADLESS', 'true') !== 'false';
 
   // Multi-user mode: fetch all connected users from the app
+  console.log(`[worker] Mode: ${MODE}`);
   console.log('[worker] Fetching connected users...');
   let users = await fetchUsersFromApp();
   if (ONLY_USERNAME) {
@@ -553,14 +777,17 @@ async function main() {
   console.log(`[worker] Found ${users.length} connected user(s)`);
 
   if (!users.length) {
-    console.log(JSON.stringify({ ok: false, error: 'no_users_connected', hint: 'Users must connect their LR Neo account in the app.' }));
-    process.exit(0);
+    const error = ONLY_USERNAME ? 'username_not_found' : 'no_users_connected';
+    console.log(JSON.stringify({ ok: false, error, username: ONLY_USERNAME, hint: 'Users must connect their LR Neo account in the app.' }));
+    process.exit(1);
   }
 
   const results = [];
   for (const user of users) {
     try {
-      const r = await scrapeUser(headless, user.username, user.email, user.password);
+      const r = MODE === 'team_points'
+        ? await scrapeTeamPoints(headless, user.username, user.email, user.password)
+        : await scrapeUser(headless, user.username, user.email, user.password);
       results.push({ username: user.username, ...r });
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
@@ -575,6 +802,47 @@ async function main() {
   if (success === 0) {
     process.exit(1);
   }
+}
+
+async function scrapeTeamPoints(headless, username, email, password) {
+  console.log(`\n[user: ${username}] Team points starting...`);
+  const partners = await fetchTeamPartners(username);
+  console.log(`[user: ${username}] Team HU partners: ${partners.length}`);
+  if (!partners.length) return { ok: true, mode: 'team_points', checked: 0, saved: 0, results: [] };
+
+  const browser = await chromium.launch({ headless, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+  const results = [];
+  try {
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: 'hu-HU' });
+    const page = await context.newPage();
+    await openAline(page, email, password);
+
+    for (const partner of partners) {
+      const lrId = clean(partner.lr_partner_id).toUpperCase();
+      try {
+        console.log(`[team:${username}] Checking ${lrId}...`);
+        const result = await fetchPartnerTotalPoints(page, partner);
+        console.log(`[team:${username}] ${lrId} -> ${result.ok ? result.total_points + ' P' : result.error}`);
+        results.push(result);
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        console.error(`[team:${username}] ${lrId} failed: ${msg}`);
+        results.push({ ...partner, ok: false, error: msg });
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+
+  const successful = results.filter(r => r.ok && Number(r.total_points || 0) > 0);
+  const uniquePointValues = new Set(successful.map(r => Number(r.total_points || 0)));
+  if (successful.length >= 3 && uniquePointValues.size === 1) {
+    const repeated = Array.from(uniquePointValues)[0];
+    throw new Error(`suspicious_same_team_points: ${successful.length} partners all read as ${repeated} P`);
+  }
+  const ingest = await postTeamPoints(username, successful);
+  console.log(`[user: ${username}] Team points saved=${ingest.saved || 0} skipped=${ingest.skipped || 0}`);
+  return { ok: true, mode: 'team_points', checked: partners.length, found: successful.length, saved: ingest.saved || 0, results };
 }
 
 main().catch((err) => {
