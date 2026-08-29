@@ -2,15 +2,22 @@ name: LR Neo Team Points
 
 on:
   schedule:
-    # GitHub cron is UTC. These cover 20:30 Europe/Belgrade in CET/CEST; the
-    # guard below runs the worker only at the local 20:00 hour.
-    - cron: '30 18,19 * * *'
+    # Run after the main snapshot job and avoid GitHub Actions peak minutes.
+    - cron: '37 8,14,20 * * *'
+      timezone: 'Europe/Belgrade'
   workflow_dispatch:
     inputs:
       username:
-        description: 'App username to refresh team LR Neo points'
-        required: true
+        description: 'Optional app username to refresh one team; empty refreshes all connected users'
+        required: false
         default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lrneo-team-points
+  cancel-in-progress: false
 
 jobs:
   team-points:
@@ -24,28 +31,13 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Check Belgrade team refresh window
-        id: team_refresh_window
-        shell: bash
-        run: |
-          hour="$(TZ=Europe/Belgrade date +%H)"
-          if (( 10#$hour == 20 )); then
-            echo "run_worker=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_worker=false" >> "$GITHUB_OUTPUT"
-            echo "Skip LR Neo team refresh at ${hour}:00 Europe/Belgrade"
-          fi
-
       - name: Install dependencies
-        if: github.event_name != 'schedule' || steps.team_refresh_window.outputs.run_worker == 'true'
         run: npm install
 
       - name: Install Chromium
-        if: github.event_name != 'schedule' || steps.team_refresh_window.outputs.run_worker == 'true'
         run: npx playwright install chromium --with-deps
 
       - name: Run LR Neo team points worker
-        if: github.event_name != 'schedule' || steps.team_refresh_window.outputs.run_worker == 'true'
         env:
           LR_APP_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
           LR_APP_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
@@ -60,3 +52,4 @@ jobs:
           name: team-points-debug
           path: debug-team-*.png
           if-no-files-found: ignore
+
