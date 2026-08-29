@@ -2,9 +2,10 @@ name: LR Neo Daily Scrape
 
 on:
   schedule:
-    # GitHub cron is UTC. Run hourly through the Belgrade business day; the
-    # guard below keeps only 08:00-20:00 Europe/Belgrade.
-    - cron: '0 6-18 * * *'
+    # Three attempts per day provide redundancy. The non-round minute avoids
+    # GitHub Actions peak load at the start of each hour.
+    - cron: '17 8,14,20 * * *'
+      timezone: 'Europe/Belgrade'
   workflow_dispatch:
     inputs:
       backfill_2026:
@@ -24,34 +25,32 @@ on:
         required: false
         default: 'snapshot'
 
+permissions:
+  contents: write
+
+concurrency:
+  group: lrneo-daily-scrape
+  cancel-in-progress: false
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Check Belgrade refresh window
-        id: refresh_window
-        shell: bash
-        run: |
-          hour="$(TZ=Europe/Belgrade date +%H)"
-          if (( 10#$hour >= 8 && 10#$hour <= 20 )); then
-            echo "run_worker=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_worker=false" >> "$GITHUB_OUTPUT"
-            echo "Skip LR Neo scrape at ${hour}:00 Europe/Belgrade"
-          fi
+
       - name: Install dependencies
-        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
         run: npm install
+
       - name: Install Chromium
-        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
         run: npx playwright install chromium --with-deps
+
       - name: Run LR Neo worker
-        if: github.event_name != 'schedule' || steps.refresh_window.outputs.run_worker == 'true'
         env:
           LRNEO_EMAIL: ${{ secrets.LRNEO_EMAIL }}
           LRNEO_PASSWORD: ${{ secrets.LRNEO_PASSWORD }}
@@ -64,11 +63,28 @@ jobs:
           LRNEO_MODE: ${{ github.event.inputs.mode || 'snapshot' }}
         run: |
           if [ "$LRNEO_MODE" = "team_points" ]; then
-            printf '%s' 'aW1wb3J0IHsgY2hyb21pdW0gfSBmcm9tICdwbGF5d3JpZ2h0JzsKY29uc3QgZW52PShuLGY9JycpPT5wcm9jZXNzLmVudltuXXx8ZiwgY2xlYW49dj0+U3RyaW5nKHZ8fCcnKS5yZXBsYWNlKC9ccysvZywnICcpLnRyaW0oKTsKY29uc3QgcmVxPW49Pntjb25zdCB2PWVudihuKTtpZighdil0aHJvdyBuZXcgRXJyb3IoJ01pc3NpbmcgJytuKTtyZXR1cm4gdn07CmFzeW5jIGZ1bmN0aW9uIGFwaShhY3Rpb24scGF5bG9hZD17fSl7Y29uc3Qgcj1hd2FpdCBmZXRjaChyZXEoJ0xSX0FQUF9JTkdFU1RfVVJMJykse21ldGhvZDonUE9TVCcsaGVhZGVyczp7J0NvbnRlbnQtVHlwZSc6J2FwcGxpY2F0aW9uL2pzb24nfSxib2R5OkpTT04uc3RyaW5naWZ5KHthY3Rpb24sdG9rZW46cmVxKCdMUl9BUFBfSU5HRVNUX1RPS0VOJyksLi4ucGF5bG9hZH0pfSk7Y29uc3QgdD1hd2FpdCByLnRleHQoKTtsZXQgZD17fTt0cnl7ZD1KU09OLnBhcnNlKHQpfWNhdGNoe31pZighci5va3x8IWQub2spdGhyb3cgbmV3IEVycm9yKGFjdGlvbisnIGZhaWxlZDogJyt0LnNsaWNlKDAsMzAwKSk7cmV0dXJuIGR9CmFzeW5jIGZ1bmN0aW9uIGxvZ2luKHBhZ2UsdSl7YXdhaXQgcGFnZS5nb3RvKCdodHRwczovL25lby5scndvcmxkLmNvbS9hLWxpbmUnLHt3YWl0VW50aWw6J2RvbWNvbnRlbnRsb2FkZWQnLHRpbWVvdXQ6NjAwMDB9KTtsZXQgYj1hd2FpdCBwYWdlLmxvY2F0b3IoJ2JvZHknKS5pbm5lclRleHQoe3RpbWVvdXQ6MTUwMDB9KS5jYXRjaCgoKT0+JycpO2lmKCEvUFNafE9zc3pwb250fFBhcnRuZXIvaS50ZXN0KGIpKXtjb25zdCBuYW1lPXBhZ2UubG9jYXRvcignaW5wdXRbbmFtZT0idXNlcm5hbWUiXSxpbnB1dCN1c2VybmFtZSxpbnB1dFt0eXBlPSJlbWFpbCJdLGlucHV0W25hbWU9ImVtYWlsIl0nKS5maXJzdCgpLCBwYXNzPXBhZ2UubG9jYXRvcignaW5wdXRbbmFtZT0icGFzc3dvcmQiXSxpbnB1dCNwYXNzd29yZCxpbnB1dFt0eXBlPSJwYXNzd29yZCJdJykuZmlyc3QoKTthd2FpdCBuYW1lLndhaXRGb3Ioe3N0YXRlOid2aXNpYmxlJyx0aW1lb3V0OjMwMDAwfSk7YXdhaXQgbmFtZS5maWxsKHUuZW1haWwpO2F3YWl0IHBhc3MuZmlsbCh1LnBhc3N3b3JkKTtjb25zdCBzdWJtaXQ9cGFnZS5sb2NhdG9yKCdidXR0b25bdHlwZT0ic3VibWl0Il0saW5wdXRbdHlwZT0ic3VibWl0Il0sYnV0dG9uOmhhcy10ZXh0KCJMb2dpbiIpLGJ1dHRvbjpoYXMtdGV4dCgiUHJpamF2YSIpJykuZmlyc3QoKTtpZihhd2FpdCBzdWJtaXQuY291bnQoKS5jYXRjaCgoKT0+MCkpYXdhaXQgUHJvbWlzZS5hbGwoW3BhZ2Uud2FpdEZvckxvYWRTdGF0ZSgnZG9tY29udGVudGxvYWRlZCcpLmNhdGNoKCgpPT57fSksc3VibWl0LmNsaWNrKCldKTtlbHNlIGF3YWl0IHBhc3MucHJlc3MoJ0VudGVyJyl9YXdhaXQgcGFnZS5nb3RvKCdodHRwczovL25lby5scndvcmxkLmNvbS9hLWxpbmUnLHt3YWl0VW50aWw6J2RvbWNvbnRlbnRsb2FkZWQnLHRpbWVvdXQ6NjAwMDB9KTthd2FpdCBwYWdlLndhaXRGb3JMb2FkU3RhdGUoJ25ldHdvcmtpZGxlJyx7dGltZW91dDo0MDAwMH0pLmNhdGNoKCgpPT57fSk7YXdhaXQgcGFnZS53YWl0Rm9yVGltZW91dCgyMjAwKX0KYXN5bmMgZnVuY3Rpb24gc2VhcmNoSW5wdXQocGFnZSl7Zm9yKGNvbnN0IHMgb2YgWydpbnB1dFtwbGFjZWhvbGRlcio9IlBhcnRuZXIiXScsJ2lucHV0W3BsYWNlaG9sZGVyKj0iS2VyZXMiXScsJ2lucHV0W3BsYWNlaG9sZGVyKj0iU2VhcmNoIl0nLCdpbnB1dFt0eXBlPSJzZWFyY2giXScsJ2lucHV0W3R5cGU9InRleHQiXScsJ2lucHV0Om5vdChbdHlwZV0pJ10pe2NvbnN0IGw9cGFnZS5sb2NhdG9yKHMpLmZpcnN0KCk7aWYoYXdhaXQgbC5jb3VudCgpLmNhdGNoKCgpPT4wKSYmYXdhaXQgbC5pc1Zpc2libGUoKS5jYXRjaCgoKT0+ZmFsc2UpKXJldHVybiBsfXRocm93IG5ldyBFcnJvcignc2VhcmNoX2lucHV0X25vdF9mb3VuZCcpfQphc3luYyBmdW5jdGlvbiBwb2ludHNOZWFySHUocGFnZSxpZCl7cmV0dXJuIHBhZ2UuZXZhbHVhdGUoKHBpZCk9Pntjb25zdCBjbGVhbj12PT5TdHJpbmcodnx8JycpLnJlcGxhY2UoL1xzKy9nLCcgJykudHJpbSgpO2NvbnN0IGV4YWN0PWNsZWFuKHBpZCkudG9VcHBlckNhc2UoKTtjb25zdCBlc2M9ZXhhY3QucmVwbGFjZSgvWy4qKz9eJHt9KCl8W1xdXFxdL2csJ1xcJCYnKTtjb25zdCBwYXJzZT10PT57bGV0IHM9Y2xlYW4odCkucmVwbGFjZShuZXcgUmVnRXhwKGVzYywnZ2knKSwnICcpLnJlcGxhY2UoL1xiKEhVfERFKVxkK1xiL2dpLCcgJyk7bGV0IHZhbHM9W107Zm9yKGNvbnN0IHggb2YgKHMubWF0Y2goL1xkW1xkXHMuLF0qL2cpfHxbXSkpe2NvbnN0IG49TnVtYmVyKHgucmVwbGFjZSgvXHMvZywnJykucmVwbGFjZSgvXC4oPz1cZHszfShcRHwkKSkvZywnJykucmVwbGFjZSgnLCcsJy4nKSk7aWYoTnVtYmVyLmlzRmluaXRlKG4pJiZuPjAmJm48OTk5OTk5KXZhbHMucHVzaChuKX1yZXR1cm4gdmFscy5sZW5ndGg/dmFsc1t2YWxzLmxlbmd0aC0xXTowfTtsZXQgbm9kZXM9W107Zm9yKGNvbnN0IGVsIG9mIEFycmF5LmZyb20oZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgndHIsW3JvbGU9InJvdyJdLHRkLGRpdixzcGFuLGEsYnV0dG9uLGxpJykpKXtjb25zdCB0eHQ9Y2xlYW4oZWwuaW5uZXJUZXh0fHxlbC50ZXh0Q29udGVudCk7aWYoIXR4dC50b1VwcGVyQ2FzZSgpLmluY2x1ZGVzKGV4YWN0KSljb250aW51ZTtjb25zdCByb3c9ZWwuY2xvc2VzdCYmKGVsLmNsb3Nlc3QoJ3RyJyl8fGVsLmNsb3Nlc3QoJ1tyb2xlPSJyb3ciXScpKTtpZihyb3cpbm9kZXMucHVzaChyb3cpO2xldCBuPWVsO2ZvcihsZXQgZD0wO24mJmQ8NjtkKyssbj1uLnBhcmVudEVsZW1lbnQpe2NvbnN0IHQ9Y2xlYW4obi5pbm5lclRleHR8fG4udGV4dENvbnRlbnQpO2lmKCF0fHx0Lmxlbmd0aD41MDB8fCF0LnRvVXBwZXJDYXNlKCkuaW5jbHVkZXMoZXhhY3QpKWNvbnRpbnVlO2NvbnN0IHI9bi5nZXRCb3VuZGluZ0NsaWVudFJlY3QoKTtpZihyLndpZHRoPDIwfHxyLmhlaWdodDw4KWNvbnRpbnVlO25vZGVzLnB1c2gobil9fWxldCBjYW5kPVtdO2Zvcihjb25zdCBuIG9mIEFycmF5LmZyb20obmV3IFNldChub2RlcykpKXtjb25zdCB0PWNsZWFuKG4uaW5uZXJUZXh0fHxuLnRleHRDb250ZW50KTtjb25zdCBwPXBhcnNlKHQpO2lmKHApY2FuZC5wdXNoKHtwLHNjb3JlOjEwMDAtdC5sZW5ndGgsdDp0LnNsaWNlKDAsMTYwKX0pO2Zvcihjb25zdCBjIG9mIEFycmF5LmZyb20obi5xdWVyeVNlbGVjdG9yQWxsKCd0ZCxbcm9sZT0iZ3JpZGNlbGwiXSxzcGFuLGRpdixhLGJ1dHRvbicpKSl7Y29uc3QgY3Q9Y2xlYW4oYy5pbm5lclRleHR8fGMudGV4dENvbnRlbnQpO2lmKCFjdHx8Y3QubGVuZ3RoPjEyMHx8Y3QudG9VcHBlckNhc2UoKT09PWV4YWN0fHwvXihIVXxERSlcZHs0LH0vaS50ZXN0KGN0KSljb250aW51ZTtjb25zdCBjcD1wYXJzZShjdCk7aWYoY3ApY2FuZC5wdXNoKHtwOmNwLHNjb3JlOmMuZ2V0Qm91bmRpbmdDbGllbnRSZWN0KCkubGVmdCx0OmN0fSl9fWNhbmQuc29ydCgoYSxiKT0+Yi5zY29yZS1hLnNjb3JlfHxiLnAtYS5wKTtyZXR1cm4gY2FuZC5sZW5ndGg/e29rOnRydWUsdG90YWxfcG9pbnRzOmNhbmRbMF0ucCxkZWJ1ZzpjYW5kLnNsaWNlKDAsMyl9OntvazpmYWxzZSxlcnJvcjoncG9pbnRzX25vdF9mb3VuZF9mb3JfaHUnfX0saWQpfQphc3luYyBmdW5jdGlvbiByZWFkUGFydG5lcihwYWdlLHApe2NvbnN0IGlkPWNsZWFuKHAubHJfcGFydG5lcl9pZCkudG9VcHBlckNhc2UoKTthd2FpdCBwYWdlLmdvdG8oJ2h0dHBzOi8vbmVvLmxyd29ybGQuY29tL2EtbGluZScse3dhaXRVbnRpbDonZG9tY29udGVudGxvYWRlZCcsdGltZW91dDo2MDAwMH0pLmNhdGNoKCgpPT57fSk7YXdhaXQgcGFnZS53YWl0Rm9yTG9hZFN0YXRlKCduZXR3b3JraWRsZScse3RpbWVvdXQ6MTUwMDB9KS5jYXRjaCgoKT0+e30pO2NvbnN0IGlucHV0PWF3YWl0IHNlYXJjaElucHV0KHBhZ2UpO2F3YWl0IGlucHV0LmZpbGwoJycpO2F3YWl0IGlucHV0LmZpbGwoaWQpO2F3YWl0IHBhZ2Uud2FpdEZvclRpbWVvdXQoMjAwMCk7bGV0IGdvdD1hd2FpdCBwb2ludHNOZWFySHUocGFnZSxpZCk7aWYoIWdvdC5vayl7Y29uc3QgaGl0PXBhZ2UuZ2V0QnlUZXh0KGlkLHtleGFjdDpmYWxzZX0pLmxhc3QoKTtpZihhd2FpdCBoaXQuY291bnQoKS5jYXRjaCgoKT0+MCkpe2F3YWl0IFByb21pc2UuYWxsKFtwYWdlLndhaXRGb3JMb2FkU3RhdGUoJ25ldHdvcmtpZGxlJyx7dGltZW91dDoxNTAwMH0pLmNhdGNoKCgpPT57fSksaGl0LmNsaWNrKHt0aW1lb3V0OjEyMDAwfSkuY2F0Y2goKCk9Pnt9KV0pO2F3YWl0IHBhZ2Uud2FpdEZvclRpbWVvdXQoMjAwMCk7Z290PWF3YWl0IHBvaW50c05lYXJIdShwYWdlLGlkKX19aWYoIWdvdC5vayl7YXdhaXQgcGFnZS5zY3JlZW5zaG90KHtwYXRoOmBkZWJ1Zy10ZWFtLSR7aWR9LnBuZ2AsZnVsbFBhZ2U6dHJ1ZX0pLmNhdGNoKCgpPT57fSk7cmV0dXJuIHsuLi5wLG9rOmZhbHNlLGVycm9yOmdvdC5lcnJvcn19cmV0dXJuIHsuLi5wLG9rOnRydWUsdG90YWxfcG9pbnRzOmdvdC50b3RhbF9wb2ludHN9fQphc3luYyBmdW5jdGlvbiBydW5Vc2VyKHUpe2NvbnN0IHBhcnRuZXJzPShhd2FpdCBhcGkoJ2xybmVvLndvcmtlcl9nZXRfdGVhbV9wYXJ0bmVycycse3VzZXJuYW1lOnUudXNlcm5hbWV9KSkucGFydG5lcnN8fFtdO2NvbnNvbGUubG9nKGBbdGVhbToke3UudXNlcm5hbWV9XSBwYXJ0bmVycz0ke3BhcnRuZXJzLmxlbmd0aH1gKTtpZighcGFydG5lcnMubGVuZ3RoKXJldHVybntvazp0cnVlLGNoZWNrZWQ6MCxzYXZlZDowfTtjb25zdCBicm93c2VyPWF3YWl0IGNocm9taXVtLmxhdW5jaCh7aGVhZGxlc3M6ZW52KCdMUk5FT19IRUFETEVTUycsJ3RydWUnKSE9PSdmYWxzZScsYXJnczpbJy0tbm8tc2FuZGJveCcsJy0tZGlzYWJsZS1kZXYtc2htLXVzYWdlJ119KTtsZXQgcmVzdWx0cz1bXTt0cnl7Y29uc3QgcGFnZT1hd2FpdChhd2FpdCBicm93c2VyLm5ld0NvbnRleHQoe3ZpZXdwb3J0Ont3aWR0aDoxOTIwLGhlaWdodDoxMDgwfSxsb2NhbGU6J2h1LUhVJ30pKS5uZXdQYWdlKCk7YXdhaXQgbG9naW4ocGFnZSx1KTtmb3IoY29uc3QgcCBvZiBwYXJ0bmVycyl7Y29uc3QgaWQ9Y2xlYW4ocC5scl9wYXJ0bmVyX2lkKS50b1VwcGVyQ2FzZSgpO3RyeXtjb25zdCByPWF3YWl0IHJlYWRQYXJ0bmVyKHBhZ2UscCk7Y29uc29sZS5sb2coYFt0ZWFtOiR7dS51c2VybmFtZX1dICR7aWR9IC0+ICR7ci5vaz9yLnRvdGFsX3BvaW50cysnIFAnOnIuZXJyb3J9YCk7cmVzdWx0cy5wdXNoKHIpfWNhdGNoKGUpe3Jlc3VsdHMucHVzaCh7Li4ucCxvazpmYWxzZSxlcnJvcjplLm1lc3NhZ2V8fFN0cmluZyhlKX0pfX19ZmluYWxseXthd2FpdCBicm93c2VyLmNsb3NlKCl9Y29uc3QgZ29vZD1yZXN1bHRzLmZpbHRlcihyPT5yLm9rJiZOdW1iZXIoci50b3RhbF9wb2ludHN8fDApPjApO2NvbnN0IHVuaXF1ZT1uZXcgU2V0KGdvb2QubWFwKHI9Pk51bWJlcihyLnRvdGFsX3BvaW50c3x8MCkpKTtpZihnb29kLmxlbmd0aD49MyYmdW5pcXVlLnNpemU9PT0xKXRocm93IG5ldyBFcnJvcihgc3VzcGljaW91c19zYW1lX3RlYW1fcG9pbnRzOiAke2dvb2QubGVuZ3RofSBwYXJ0bmVycyBhbGwgcmVhZCBhcyAke1suLi51bmlxdWVdWzBdfSBQYCk7Y29uc3Qgc2F2ZWQ9YXdhaXQgYXBpKCdscm5lby5pbmdlc3RfdGVhbV9wb2ludHMnLHt1c2VybmFtZTp1LnVzZXJuYW1lLHJlc3VsdHM6Z29vZH0pO3JldHVybntvazp0cnVlLGNoZWNrZWQ6cGFydG5lcnMubGVuZ3RoLGZvdW5kOmdvb2QubGVuZ3RoLHNhdmVkOnNhdmVkLnNhdmVkfHwwfX0KbGV0IHVzZXJzPShhd2FpdCBhcGkoJ2xybmVvLndvcmtlcl9nZXRfdXNlcnMnKSkudXNlcnN8fFtdO2NvbnN0IG9ubHk9Y2xlYW4oZW52KCdMUk5FT19PTkxZX1VTRVJOQU1FJywnJykpLnRvTG93ZXJDYXNlKCk7aWYob25seSl1c2Vycz11c2Vycy5maWx0ZXIodT0+Y2xlYW4odS51c2VybmFtZSkudG9Mb3dlckNhc2UoKT09PW9ubHkpO2xldCBvdXQ9W107Zm9yKGNvbnN0IHUgb2YgdXNlcnMpe3RyeXtvdXQucHVzaCh7dXNlcm5hbWU6dS51c2VybmFtZSwuLi5hd2FpdCBydW5Vc2VyKHUpfSl9Y2F0Y2goZSl7Y29uc29sZS5lcnJvcihgW3RlYW06JHt1LnVzZXJuYW1lfV0gJHtlLm1lc3NhZ2V8fGV9YCk7b3V0LnB1c2goe3VzZXJuYW1lOnUudXNlcm5hbWUsb2s6ZmFsc2UsZXJyb3I6ZS5tZXNzYWdlfHxTdHJpbmcoZSl9KX19Y29uc29sZS5sb2coSlNPTi5zdHJpbmdpZnkoe29rOnRydWUscmVzdWx0czpvdXR9KSk7aWYoIW91dC5zb21lKHI9PnIub2spKXByb2Nlc3MuZXhpdCgxKTs=' | base64 -d > team-points-worker.mjs
-            node team-points-worker.mjs
+            node lrneo-team-points-worker.js
           else
             node lrneo-worker.js
           fi
+
+      - name: Keep scheduled workflows active
+        if: ${{ success() && github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          day="$(TZ=Europe/Belgrade date +%d)"
+          hour="$(TZ=Europe/Belgrade date +%H)"
+          if [ "$day" != "01" ] || [ "$hour" != "08" ]; then
+            exit 0
+          fi
+          mkdir -p .github/health
+          printf 'Last successful scheduled LR Neo refresh: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > .github/health/last-scheduled-success.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/health/last-scheduled-success.txt
+          git diff --cached --quiet || git commit -m 'chore: keep LR Neo schedules active'
+          git push
+
       - name: Upload debug screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -76,3 +92,4 @@ jobs:
           name: debug-screenshot
           path: debug-*.png
           if-no-files-found: ignore
+
