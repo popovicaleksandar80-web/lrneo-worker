@@ -151,11 +151,14 @@ async function clickPrevMonth(page, expectedMonthName = '') {
 
   // ── Strategy 3: aria-label ──
   for (const label of ['previous', 'előző', 'elöző', 'prev', 'back', 'left', 'vissza', 'prior']) {
-    const btn = page.locator(`button[aria-label*="${label}" i]`).first();
-    if (await btn.count() > 0) {
-      console.log(`  [prev-month] found via aria-label: ${label}`);
-      await btn.click();
-      if (await clickedAndVerified(`aria-label ${label}`)) return true;
+    const buttons = page.locator(`button[aria-label*="${label}" i]`);
+    const count = await buttons.count();
+    for (let index = 0; index < count; index++) {
+      const btn = buttons.nth(index);
+      if (!await btn.isVisible().catch(() => false)) continue;
+      console.log(`  [prev-month] found visible button via aria-label: ${label}`);
+      const clicked = await btn.click({ timeout: 5000 }).then(() => true).catch(() => false);
+      if (clicked && await clickedAndVerified(`aria-label ${label}`)) return true;
     }
   }
 
@@ -701,56 +704,61 @@ async function scrapeUser(headless, username, email, password) {
     const shouldCaptureHistory = CAPTURE_PREV_MONTH || isGracePeriod() || BACKFILL_2026;
     const firstMonthIdx = BACKFILL_2026 && now.getFullYear() === 2026 ? 0 : now.getMonth() - 1;
     if (shouldCaptureHistory && firstMonthIdx >= 0 && now.getFullYear() === 2026) {
-      const today = now.getDate();
-      console.log(`[user: ${username}] Historical capture mode=${BACKFILL_2026 ? 'backfill_2026' : 'prev-month'} day=${today}/${GRACE_DAYS}`);
-      console.log(`  [history] visible month before clicks: ${await visibleMonthText(page)}`);
+      try {
+        const today = now.getDate();
+        console.log(`[user: ${username}] Historical capture mode=${BACKFILL_2026 ? 'backfill_2026' : 'prev-month'} day=${today}/${GRACE_DAYS}`);
+        console.log(`  [history] visible month before clicks: ${await visibleMonthText(page)}`);
 
-      let lastSig = currentSig;
-      let savedHistory = 0;
-      for (let targetMonthIdx = now.getMonth() - 1; targetMonthIdx >= firstMonthIdx; targetMonthIdx--) {
-        const targetMonthName = HU_MONTHS[targetMonthIdx];
-        const snapDate = monthLastDayIso(2026, targetMonthIdx);
-        console.log(`[user: ${username}] History capture — navigating to ${targetMonthName} 2026, saving as ${snapDate}...`);
+        let lastSig = currentSig;
+        let savedHistory = 0;
+        for (let targetMonthIdx = now.getMonth() - 1; targetMonthIdx >= firstMonthIdx; targetMonthIdx--) {
+          const targetMonthName = HU_MONTHS[targetMonthIdx];
+          const snapDate = monthLastDayIso(2026, targetMonthIdx);
+          console.log(`[user: ${username}] History capture — navigating to ${targetMonthName} 2026, saving as ${snapDate}...`);
 
-        const moved = await clickPrevMonth(page, targetMonthName);
-        if (!moved) {
-          console.log(`[user: ${username}] ⚠ Could not navigate to ${targetMonthName} 2026 — stopping history capture`);
-          break;
-        }
+          const moved = await clickPrevMonth(page, targetMonthName);
+          if (!moved) {
+            console.log(`[user: ${username}] ⚠ Could not navigate to ${targetMonthName} 2026 — stopping history capture`);
+            break;
+          }
 
-        await page.waitForTimeout(1500);
-        let monthChanged = false;
-        for (let i = 0; i < 10; i++) {
-          console.log(`  [history] visible month check ${i + 1}: ${await visibleMonthText(page)}`);
-          monthChanged = await pageHasMonth(page, targetMonthName);
-          if (monthChanged) break;
-          await page.waitForTimeout(1000);
-        }
-        console.log(`  [history] month verification: looking for "${targetMonthName}" → ${monthChanged ? '✓ found' : '⚠ not found in page text'}`);
-        if (!monthChanged) {
-          await saveDebugScreenshot(page, `debug-aline-history-${snapDate}-not-verified.png`);
-          console.log(`[user: ${username}] ⚠ Month was not verified — skipping ${snapDate} to avoid wrong overwrite`);
-          break;
-        }
+          await page.waitForTimeout(1500);
+          let monthChanged = false;
+          for (let i = 0; i < 10; i++) {
+            console.log(`  [history] visible month check ${i + 1}: ${await visibleMonthText(page)}`);
+            monthChanged = await pageHasMonth(page, targetMonthName);
+            if (monthChanged) break;
+            await page.waitForTimeout(1000);
+          }
+          console.log(`  [history] month verification: looking for "${targetMonthName}" → ${monthChanged ? '✓ found' : '⚠ not found in page text'}`);
+          if (!monthChanged) {
+            await saveDebugScreenshot(page, `debug-aline-history-${snapDate}-not-verified.png`);
+            console.log(`[user: ${username}] ⚠ Month was not verified — skipping ${snapDate} to avoid wrong overwrite`);
+            break;
+          }
 
-        await saveDebugScreenshot(page, `debug-aline-history-${snapDate}.png`);
-        const monthRawRows = await waitForAlineRows(page, {
-          avoidSignature: lastSig,
-          minPartners: 1,
-          timeoutMs: 70000,
-        });
-        const monthRows = cleanAndDedup(monthRawRows);
-        const monthPartners = partnerCount(monthRows);
-        if (!monthPartners) {
-          console.log(`[user: ${username}] ⚠ ${snapDate} has no partner rows — skipping snapshot`);
-          continue;
+          await saveDebugScreenshot(page, `debug-aline-history-${snapDate}.png`);
+          const monthRawRows = await waitForAlineRows(page, {
+            avoidSignature: lastSig,
+            minPartners: 1,
+            timeoutMs: 70000,
+          });
+          const monthRows = cleanAndDedup(monthRawRows);
+          const monthPartners = partnerCount(monthRows);
+          if (!monthPartners) {
+            console.log(`[user: ${username}] ⚠ ${snapDate} has no partner rows — skipping snapshot`);
+            continue;
+          }
+          await postSnapshot(monthRows, page.url(), username, snapDate);
+          lastSig = rowSignature(monthRawRows);
+          savedHistory += 1;
+          console.log(`[user: ${username}] ✓ history rows=${monthRows.length} partners=${monthPartners} saved as ${snapDate} (overwrite)`);
         }
-        await postSnapshot(monthRows, page.url(), username, snapDate);
-        lastSig = rowSignature(monthRawRows);
-        savedHistory += 1;
-        console.log(`[user: ${username}] ✓ history rows=${monthRows.length} partners=${monthPartners} saved as ${snapDate} (overwrite)`);
+        console.log(`[user: ${username}] History capture complete. saved=${savedHistory}`);
+      } catch (historyError) {
+        console.log(`[user: ${username}] ⚠ Historical capture failed after current snapshot was saved: ${historyError?.message || historyError}`);
+        await saveDebugScreenshot(page, 'debug-aline-history-failed.png');
       }
-      console.log(`[user: ${username}] History capture complete. saved=${savedHistory}`);
     }
 
     return { ok: true, rows: rows.length };
@@ -849,3 +857,4 @@ main().catch((err) => {
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
 });
+
