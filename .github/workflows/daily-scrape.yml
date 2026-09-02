@@ -1,10 +1,6 @@
 name: LR Neo Daily Scrape
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/daily-scrape.yml'
   schedule:
     # Paired UTC hours cover both CET and CEST; the guard keeps only
     # 08:00-20:59 Europe/Belgrade. Two nearby attempts improve reliability.
