@@ -2,9 +2,9 @@ name: LR Neo Team Points
 
 on:
   schedule:
-    # Run after the main snapshot job and avoid GitHub Actions peak minutes.
-    - cron: '37 8,14,20 * * *'
-      timezone: 'Europe/Belgrade'
+    # GitHub Actions cron is UTC and does not support a timezone field.
+    # Run after the main snapshot attempts and cover both CET and CEST.
+    - cron: '47 6,7,12,13,18,19 * * *'
   workflow_dispatch:
     inputs:
       username:
@@ -31,13 +31,28 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Check Belgrade refresh window
+        id: refresh_window
+        shell: bash
+        run: |
+          hour="$(TZ=Europe/Belgrade date +%H)"
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || (( 10#$hour >= 8 && 10#$hour <= 20 )); then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Skip LR Neo team points at ${hour}:00 Europe/Belgrade"
+          fi
+
       - name: Install dependencies
+        if: steps.refresh_window.outputs.run_worker == 'true'
         run: npm install
 
       - name: Install Chromium
+        if: steps.refresh_window.outputs.run_worker == 'true'
         run: npx playwright install chromium --with-deps
 
       - name: Run LR Neo team points worker
+        if: steps.refresh_window.outputs.run_worker == 'true'
         env:
           LR_APP_INGEST_URL: ${{ secrets.LR_APP_INGEST_URL }}
           LR_APP_INGEST_TOKEN: ${{ secrets.LR_APP_INGEST_TOKEN }}
@@ -46,10 +61,9 @@ jobs:
         run: node lrneo-team-points-worker.js
 
       - name: Upload debug screenshots
-        if: always()
+        if: ${{ always() && steps.refresh_window.outputs.run_worker == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: team-points-debug
           path: debug-team-*.png
           if-no-files-found: ignore
-
