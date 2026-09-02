@@ -3,6 +3,27 @@ import { chromium } from 'playwright';
 const env = (name, fallback = '') => process.env[name] || fallback;
 const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
+function cookieHeaderToCookies(header) {
+  return String(header || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const eq = part.indexOf('=');
+      if (eq < 1) return null;
+      return {
+        name: part.slice(0, eq),
+        value: part.slice(eq + 1),
+        domain: 'neo.lrworld.com',
+        path: '/',
+        secure: true,
+        httpOnly: false,
+        sameSite: 'Lax',
+      };
+    })
+    .filter(Boolean);
+}
+
 function required(name) {
   const value = env(name);
   if (!value) throw new Error(`Missing environment variable: ${name}`);
@@ -66,6 +87,8 @@ async function openAline(page, user) {
   await page.waitForLoadState('networkidle', { timeout: 50000 }).catch(() => {});
   await page.waitForTimeout(2500);
   await dismissCookiePopup(page);
+  const loginStillVisible = await page.locator('input[name="password"], input#password, input[type="password"]').first().isVisible().catch(() => false);
+  if (loginStillVisible) throw new Error('lrneo_login_failed:login_form_still_visible');
 }
 
 async function findSearchInput(page) {
@@ -290,6 +313,8 @@ async function runUser(user) {
   const results = [];
   try {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: 'hu-HU' });
+    const sessionCookies = cookieHeaderToCookies(user.cookies || '');
+    if (sessionCookies.length) await context.addCookies(sessionCookies);
     const page = await context.newPage();
     await openAline(page, user);
     for (const partner of partners) {
@@ -313,9 +338,7 @@ async function runUser(user) {
   }
   const saved = await appPost('lrneo.ingest_team_points', { username: user.username, results: successful });
   if (partners.length > 0 && Number(saved.saved || 0) === 0) {
-    const warning = `team_points_saved_zero: checked=${partners.length} found=${successful.length}`;
-    console.warn(`[team:${user.username}] ${warning}`);
-    return { ok: true, warning, checked: partners.length, found: successful.length, saved: 0, results };
+    throw new Error(`team_points_saved_zero: checked=${partners.length} found=${successful.length}`);
   }
   return { ok: true, checked: partners.length, found: successful.length, saved: saved.saved || 0, results };
 }
@@ -342,9 +365,11 @@ async function main() {
     console.warn('[team] finished_without_saved_points');
   }
   console.log(JSON.stringify({ ok: true, saved: savedTotal, results }));
+  if (results.some((result) => !result.ok)) process.exitCode = 1;
 }
 
 main().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);
 });
+
