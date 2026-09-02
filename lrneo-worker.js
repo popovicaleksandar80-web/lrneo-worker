@@ -12,6 +12,27 @@ function clean(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function cookieHeaderToCookies(header) {
+  return String(header || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const eq = part.indexOf('=');
+      if (eq < 1) return null;
+      return {
+        name: part.slice(0, eq),
+        value: part.slice(eq + 1),
+        domain: 'neo.lrworld.com',
+        path: '/',
+        secure: true,
+        httpOnly: false,
+        sameSite: 'Lax',
+      };
+    })
+    .filter(Boolean);
+}
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -238,6 +259,25 @@ async function fetchUsersFromApp() {
   try { data = JSON.parse(text); } catch (_) {}
   if (!response.ok || !data.ok) throw new Error(`worker_get_users failed: ${text.slice(0, 400)}`);
   return Array.isArray(data.users) ? data.users : [];
+}
+
+async function refreshSnapshotViaApp(username) {
+  const ingestUrl = required('LR_APP_INGEST_URL');
+  const token = required('LR_APP_INGEST_TOKEN');
+  const response = await fetch(ingestUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'lrneo.worker_scrape_now', token, username }),
+  });
+  const text = await response.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch (_) {}
+  if (!response.ok || !data.ok || !data.fresh) {
+    const reason = clean(data.error || data.scrape_error || `HTTP_${response.status}`);
+    throw new Error(`server_snapshot_unavailable:${reason || 'unknown'}`);
+  }
+  console.log(`[user: ${username}] ✓ server snapshot date=${data.date || todayIso()} fetched_at=${data.fetched_at || ''}`);
+  return { ok: true, rows: null, source: 'worker_server_scrape', date: data.date || todayIso() };
 }
 
 async function fetchTeamPartners(username) {
@@ -680,11 +720,13 @@ async function postSnapshot(rows, pageUrl, username, snapDate) {
 
 // ─── Scrape one user ──────────────────────────────────────────────────────────
 
-async function scrapeUser(headless, username, email, password) {
+async function scrapeUser(headless, username, email, password, cookieHeader = '') {
   console.log(`\n[user: ${username}] Starting...`);
   const browser = await chromium.launch({ headless, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: 'hu-HU' });
+    const sessionCookies = cookieHeaderToCookies(cookieHeader);
+    if (sessionCookies.length) await context.addCookies(sessionCookies);
     const page    = await context.newPage();
 
     await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -803,9 +845,17 @@ async function main() {
   const results = [];
   for (const user of users) {
     try {
-      const r = MODE === 'team_points'
-        ? await scrapeTeamPoints(headless, user.username, user.email, user.password)
-        : await scrapeUser(headless, user.username, user.email, user.password);
+      let r;
+      if (MODE === 'team_points') {
+        r = await scrapeTeamPoints(headless, user.username, user.email, user.password, user.cookies || '');
+      } else {
+        try {
+          r = await refreshSnapshotViaApp(user.username);
+        } catch (serverError) {
+          console.log(`[user: ${user.username}] ⚠ ${serverError?.message || serverError}; trying browser fallback`);
+          r = await scrapeUser(headless, user.username, user.email, user.password, user.cookies || '');
+        }
+      }
       results.push({ username: user.username, ...r });
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
@@ -822,7 +872,7 @@ async function main() {
   }
 }
 
-async function scrapeTeamPoints(headless, username, email, password) {
+async function scrapeTeamPoints(headless, username, email, password, cookieHeader = '') {
   console.log(`\n[user: ${username}] Team points starting...`);
   const partners = await fetchTeamPartners(username);
   console.log(`[user: ${username}] Team HU partners: ${partners.length}`);
@@ -832,6 +882,8 @@ async function scrapeTeamPoints(headless, username, email, password) {
   const results = [];
   try {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: 'hu-HU' });
+    const sessionCookies = cookieHeaderToCookies(cookieHeader);
+    if (sessionCookies.length) await context.addCookies(sessionCookies);
     const page = await context.newPage();
     await openAline(page, email, password);
 
