@@ -55,6 +55,11 @@ async function fetchPartners(username) {
   return Array.isArray(data.partners) ? data.partners : [];
 }
 
+async function reportWorkerFailure(username, error) {
+  const message = clean(error && error.message ? error.message : error).slice(0, 180) || 'worker_failed';
+  await appPost('lrneo.worker_report_failure', { username, context: 'team', error: message }).catch(() => {});
+}
+
 async function dismissCookiePopup(page) {
   const button = page.locator('button:has-text("Accept all"), button:has-text("Elfogad")').first();
   if (await button.count().catch(() => 0)) {
@@ -358,6 +363,7 @@ async function main() {
       const message = error && error.message ? error.message : String(error);
       console.error(`[team:${user.username}] ${message}`);
       results.push({ username: user.username, ok: false, error: message });
+      await reportWorkerFailure(user.username, message);
     }
   }
   const savedTotal = results.reduce((sum, result) => sum + Number(result.saved || 0), 0);
