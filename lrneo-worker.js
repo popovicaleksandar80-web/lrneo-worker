@@ -283,11 +283,14 @@ async function dismissCookiePopup(page) {
 // ─── Login ────────────────────────────────────────────────────────────────────
 
 async function loginIfNeeded(page, email, password) {
-  const text = await page.locator('body').innerText({ timeout: 15000 }).catch(() => '');
-  if (/PSZ|Összpont|Osszpont|Partner keresés|Partner kereses/.test(text)) return;
-
   const user = page.locator('input[name="username"], input#username, input[type="email"], input[name="email"]').first();
   const pass = page.locator('input[name="password"], input#password, input[type="password"]').first();
+  const loginVisible = await pass.isVisible({ timeout: 5000 }).catch(() => false);
+  if (!loginVisible) {
+    const text = await page.locator('body').innerText({ timeout: 15000 }).catch(() => '');
+    if (/PSZ|Összpont|Osszpont|Partner keresés|Partner kereses/.test(text)) return;
+  }
+
   await user.waitFor({ state: 'visible', timeout: 30000 });
   await user.fill(email);
   await pass.fill(password);
@@ -302,6 +305,13 @@ async function loginIfNeeded(page, email, password) {
     await pass.press('Enter');
   }
   await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+
+  if (await pass.isVisible().catch(() => false)) {
+    const text = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+    const invalid = /(hibas|hibás|helytelen|ervenytelen|érvénytelen|invalid|incorrect|wrong).{0,80}(jelszo|jelszó|password|belepes|belépés)/i.test(text);
+    throw new Error(`lrneo_login_failed:${invalid ? 'invalid_credentials' : 'login_form_still_visible'}`);
+  }
 }
 
 // ─── Extract rows ─────────────────────────────────────────────────────────────
