@@ -280,6 +280,21 @@ async function refreshSnapshotViaApp(username) {
   return { ok: true, rows: null, source: 'worker_server_scrape', date: data.date || todayIso() };
 }
 
+async function reportWorkerFailure(username, error, context = 'stats') {
+  const message = clean(error && error.message ? error.message : error).slice(0, 180) || 'worker_failed';
+  await fetch(required('LR_APP_INGEST_URL'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'lrneo.worker_report_failure',
+      token: required('LR_APP_INGEST_TOKEN'),
+      username,
+      context,
+      error: message,
+    }),
+  }).catch(() => {});
+}
+
 async function fetchTeamPartners(username) {
   const ingestUrl = required('LR_APP_INGEST_URL');
   const token     = required('LR_APP_INGEST_TOKEN');
@@ -861,6 +876,7 @@ async function main() {
       const msg = err && err.message ? err.message : String(err);
       console.error(`[user: ${user.username}] ✗ ${msg}`);
       results.push({ username: user.username, ok: false, error: msg });
+      await reportWorkerFailure(user.username, msg, 'stats');
     }
   }
 
