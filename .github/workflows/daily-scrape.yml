@@ -2,10 +2,10 @@ name: LR Neo Daily Scrape
 
 on:
   schedule:
-    # Three attempts per day provide redundancy. The non-round minute avoids
-    # GitHub Actions peak load at the start of each hour.
-    - cron: '17 8,14,20 * * *'
-      timezone: 'Europe/Belgrade'
+    # GitHub Actions cron is UTC and does not support a timezone field.
+    # The paired UTC hours cover both CET and CEST; the guard keeps only
+    # 08:00-20:59 Europe/Belgrade. Two nearby attempts improve reliability.
+    - cron: '17 6,7,12,13,18,19 * * *'
   workflow_dispatch:
     inputs:
       backfill_2026:
@@ -44,13 +44,28 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Check Belgrade refresh window
+        id: refresh_window
+        shell: bash
+        run: |
+          hour="$(TZ=Europe/Belgrade date +%H)"
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || (( 10#$hour >= 8 && 10#$hour <= 20 )); then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "Skip LR Neo scrape at ${hour}:00 Europe/Belgrade"
+          fi
+
       - name: Install dependencies
+        if: steps.refresh_window.outputs.run_worker == 'true'
         run: npm install
 
       - name: Install Chromium
+        if: steps.refresh_window.outputs.run_worker == 'true'
         run: npx playwright install chromium --with-deps
 
       - name: Run LR Neo worker
+        if: steps.refresh_window.outputs.run_worker == 'true'
         env:
           LRNEO_EMAIL: ${{ secrets.LRNEO_EMAIL }}
           LRNEO_PASSWORD: ${{ secrets.LRNEO_PASSWORD }}
@@ -69,7 +84,7 @@ jobs:
           fi
 
       - name: Keep scheduled workflows active
-        if: ${{ success() && github.event_name == 'schedule' }}
+        if: ${{ success() && github.event_name == 'schedule' && steps.refresh_window.outputs.run_worker == 'true' }}
         shell: bash
         run: |
           day="$(TZ=Europe/Belgrade date +%d)"
@@ -86,10 +101,9 @@ jobs:
           git push
 
       - name: Upload debug screenshot
-        if: always()
+        if: ${{ always() && steps.refresh_window.outputs.run_worker == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshot
           path: debug-*.png
           if-no-files-found: ignore
-
