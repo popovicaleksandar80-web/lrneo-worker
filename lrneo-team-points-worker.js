@@ -337,6 +337,9 @@ async function runUser(user) {
   }
 
   const successful = results.filter((result) => result.ok && Number.isFinite(Number(result.total_points)));
+  const expectedDerived = partners.filter((partner) => (
+    partner.subject_type === 'derived_user' || Number(partner.derived_user_id || 0) > 0
+  ));
   const uniqueValues = new Set(successful.map((result) => Number(result.total_points)));
   if (successful.length >= 3 && uniqueValues.size === 1) {
     throw new Error(`suspicious_same_team_points: ${successful.length} partners all read as ${Array.from(uniqueValues)[0]} P`);
@@ -344,6 +347,19 @@ async function runUser(user) {
   const saved = await appPost('lrneo.ingest_team_points', { username: user.username, results: successful });
   if (partners.length > 0 && Number(saved.saved || 0) === 0) {
     throw new Error(`team_points_saved_zero: checked=${partners.length} found=${successful.length}`);
+  }
+  if (expectedDerived.length > 0 && Number(saved.derived_saved || 0) < expectedDerived.length) {
+    const missingIds = expectedDerived
+      .filter((partner) => !successful.some((result) => (
+        clean(result.lr_partner_id).toUpperCase() === clean(partner.lr_partner_id).toUpperCase()
+      )))
+      .map((partner) => clean(partner.lr_partner_id).toUpperCase())
+      .filter(Boolean)
+      .join(',');
+    throw new Error(
+      `derived_team_points_missing: expected=${expectedDerived.length} saved=${Number(saved.derived_saved || 0)}`
+      + (missingIds ? ` ids=${missingIds}` : '')
+    );
   }
   return { ok: true, checked: partners.length, found: successful.length, saved: saved.saved || 0, results };
 }
