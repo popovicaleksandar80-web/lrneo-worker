@@ -882,8 +882,8 @@ async function main() {
 
   const success = results.filter(r => r.ok).length;
   console.log(`\n[worker] Done. ${success}/${users.length} users scraped successfully.`);
-  console.log(JSON.stringify({ ok: true, results }));
-  if (success === 0) {
+  console.log(JSON.stringify({ ok: success === users.length, results }));
+  if (success < users.length) {
     process.exit(1);
   }
 }
@@ -920,15 +920,17 @@ async function scrapeTeamPoints(headless, username, email, password, cookieHeade
     await browser.close();
   }
 
-  const successful = results.filter(r => r.ok && Number(r.total_points || 0) > 0);
+  const successful = results.filter(r => r.ok && r.total_points !== null && r.total_points !== '' && Number.isFinite(Number(r.total_points)) && Number(r.total_points) >= 0);
   const uniquePointValues = new Set(successful.map(r => Number(r.total_points || 0)));
-  if (successful.length >= 3 && uniquePointValues.size === 1) {
+  if (successful.length >= 3 && uniquePointValues.size === 1 && !uniquePointValues.has(0)) {
     const repeated = Array.from(uniquePointValues)[0];
     throw new Error(`suspicious_same_team_points: ${successful.length} partners all read as ${repeated} P`);
   }
   const ingest = await postTeamPoints(username, successful);
   console.log(`[user: ${username}] Team points saved=${ingest.saved || 0} skipped=${ingest.skipped || 0}`);
-  return { ok: true, mode: 'team_points', checked: partners.length, found: successful.length, saved: ingest.saved || 0, results };
+  return { ok: ingest.complete === true && successful.length === partners.length, mode: 'team_points',
+    state: ingest.complete === true ? 'complete' : 'partial', checked: partners.length, found: successful.length,
+    saved: ingest.saved || 0, missing: ingest.missing, dataHealth: ingest.dataHealth, results };
 }
 
 main().catch((err) => {

@@ -325,7 +325,9 @@ async function runUser(user) {
     for (const partner of partners) {
       const lrId = clean(partner.lr_partner_id).toUpperCase();
       try {
-        const result = await readPartner(page, partner);
+        let result = await readPartner(page, partner);
+        // A search/detail load can be transient. Retry this target once, never invent zero points.
+        if (!result.ok) result = await readPartner(page, partner);
         console.log(`[team:${user.username}] ${lrId} -> ${result.ok ? `${result.total_points} P` : result.error}`);
         results.push(result);
       } catch (error) {
@@ -341,27 +343,20 @@ async function runUser(user) {
     partner.subject_type === 'derived_user' || Number(partner.derived_user_id || 0) > 0
   ));
   const uniqueValues = new Set(successful.map((result) => Number(result.total_points)));
-  if (successful.length >= 3 && uniqueValues.size === 1) {
+  if (successful.length >= 3 && uniqueValues.size === 1 && !uniqueValues.has(0)) {
     throw new Error(`suspicious_same_team_points: ${successful.length} partners all read as ${Array.from(uniqueValues)[0]} P`);
   }
   const saved = await appPost('lrneo.ingest_team_points', { username: user.username, results: successful });
-  if (partners.length > 0 && Number(saved.saved || 0) === 0) {
-    throw new Error(`team_points_saved_zero: checked=${partners.length} found=${successful.length}`);
-  }
-  if (expectedDerived.length > 0 && Number(saved.derived_saved || 0) < expectedDerived.length) {
-    const missingIds = expectedDerived
-      .filter((partner) => !successful.some((result) => (
-        clean(result.lr_partner_id).toUpperCase() === clean(partner.lr_partner_id).toUpperCase()
-      )))
-      .map((partner) => clean(partner.lr_partner_id).toUpperCase())
-      .filter(Boolean)
-      .join(',');
-    throw new Error(
-      `derived_team_points_missing: expected=${expectedDerived.length} saved=${Number(saved.derived_saved || 0)}`
-      + (missingIds ? ` ids=${missingIds}` : '')
-    );
-  }
-  return { ok: true, checked: partners.length, found: successful.length, saved: saved.saved || 0, results };
+  // Ingest accepts valid rows even when other targets fail. Preserve these write counts.
+  // The server compares the expected target set against actual persisted rows.
+  const complete = saved.complete === true && successful.length === partners.length
+    && Number(saved.derived_saved || 0) >= expectedDerived.length;
+  const state = complete ? 'complete' : (Number(saved.saved || 0) > 0 ? 'partial' : 'failed');
+  return { ok: complete, state, checked: partners.length, found: successful.length,
+    saved: Number(saved.saved || 0), skipped: Number(saved.skipped || 0),
+    derived_saved: Number(saved.derived_saved || 0), missing: Number(saved.missing ?? (partners.length - successful.length)),
+    dataHealth: saved.dataHealth || null, error: complete ? null : 'team_points_incomplete', results };
+
 }
 
 async function main() {
@@ -374,7 +369,9 @@ async function main() {
   const results = [];
   for (const user of users) {
     try {
-      results.push({ username: user.username, ...(await runUser(user)) });
+      const result = await runUser(user);
+      results.push({ username: user.username, ...result });
+      if (!result.ok) await reportWorkerFailure(user.username, result.error);
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
       console.error(`[team:${user.username}] ${message}`);
@@ -386,7 +383,9 @@ async function main() {
   if (savedTotal <= 0) {
     console.warn('[team] finished_without_saved_points');
   }
-  console.log(JSON.stringify({ ok: true, saved: savedTotal, results }));
+  console.log(JSON.stringify({ ok: results.every((result) => result.ok),
+    state: results.every((result) => result.ok) ? 'complete' : (savedTotal > 0 ? 'partial' : 'failed'),
+    saved: savedTotal, results }));
   if (results.some((result) => !result.ok)) process.exitCode = 1;
 }
 
