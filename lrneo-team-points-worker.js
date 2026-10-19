@@ -70,6 +70,11 @@ async function dismissCookiePopup(page) {
 
 async function openAline(page, user) {
   await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForFunction(() => {
+    const input = document.querySelector('input[type="password"]');
+    return (input && input.getClientRects().length > 0)
+      || /Sales Report|PSZ|Összpont|Osszpont|Partner keres/i.test(document.body?.innerText || '');
+  }, null, { timeout: 60000 });
   const body = await page.locator('body').innerText({ timeout: 15000 }).catch(() => '');
   const passwordVisible = await page.locator('input[name="password"], input#password, input[type="password"]').first().isVisible().catch(() => false);
   if (passwordVisible || !/Sales Report|PSZ|Osszpont|Partner keres/i.test(body)) {
@@ -271,9 +276,26 @@ async function readOsszpontFromContact(page, lrId) {
   }, lrId);
 }
 
+async function resolveNumericPartnerId(page, number) {
+  return page.evaluate((digits) => {
+    const wanted = String(digits).replace(/^0+/, '');
+    const found = new Set();
+    for (const node of document.querySelectorAll('a, li, div, span')) {
+      const text = String(node.innerText || '').trim();
+      if (!text || text.length > 250) continue;
+      for (const match of text.matchAll(/\b([A-Z]{2})\s*(\d[\d\s]{5,})\b/g)) {
+        const id = match[1] + match[2].replace(/\s/g, '');
+        if (id.slice(2).replace(/^0+/, '') === wanted) found.add(id);
+      }
+    }
+    return found.size === 1 ? [...found][0] : null;
+  }, number);
+}
+
 async function readPartner(page, partner) {
   const lrId = clean(partner.lr_partner_id).toUpperCase();
   if (!lrId) return { ...partner, ok: false, error: 'missing_lr_partner_id' };
+  if (!/^(?:[A-Z]{2})?\d{6,}$/.test(lrId)) return { ...partner, ok: false, error: 'invalid_lr_partner_id' };
 
   await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
@@ -286,7 +308,11 @@ async function readPartner(page, partner) {
   await page.waitForTimeout(2200);
   await page.screenshot({ path: `debug-team-${lrId}-search.png`, fullPage: true }).catch(() => {});
 
-  const result = page.getByText(lrId, { exact: false }).last();
+  // Resolve a numeric registration only from one actual LR Neo search result.
+  // Keep the stored registration untouched; never manufacture a HU/DE prefix.
+  const lookupId = /^\d+$/.test(lrId) ? await resolveNumericPartnerId(page, lrId) : lrId;
+  if (!lookupId) return { ...partner, ok: false, error: 'lr_partner_number_unconfirmed' };
+  const result = page.getByText(new RegExp(lookupId.split('').join('\\s*'), 'i')).last();
   if (await result.count().catch(() => 0)) {
     await Promise.all([
       page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {}),
@@ -296,14 +322,14 @@ async function readPartner(page, partner) {
     await page.screenshot({ path: `debug-team-${lrId}-detail.png`, fullPage: true }).catch(() => {});
   }
 
-  let points = await readPointsFromHuRow(page, lrId);
-  if (!points.ok) points = await readOsszpontFromContact(page, lrId);
-  if (!points.ok) points = await readPointsNearHu(page, lrId);
+  let points = await readPointsFromHuRow(page, lookupId);
+  if (!points.ok) points = await readOsszpontFromContact(page, lookupId);
+  if (!points.ok) points = await readPointsNearHu(page, lookupId);
 
   if (!points.ok || !Number.isFinite(Number(points.total_points))) {
     return { ...partner, ok: false, error: points.error || 'points_not_found' };
   }
-  return { ...partner, ok: true, total_points: points.total_points };
+  return { ...partner, ok: true, total_points: points.total_points, source_lr_partner_id: lookupId };
 }
 
 async function runUser(user) {

@@ -87,3 +87,11 @@ test('source readiness timeout propagates without attempting a login or write',a
   vm.runInContext(main.slice(main.indexOf('async function loginIfNeeded('),main.indexOf('// ─── Extract rows')),c);
   await assert.rejects(c.loginIfNeeded({waitForFunction:async()=>{throw new Error('source unavailable');},locator:()=>{throw new Error('must not reach login');}},'',''),/source unavailable/);
 });
+test('numeric registration resolves only from one real prefixed search result',async()=>{
+  const c={document:null};vm.createContext(c);
+  vm.runInContext(source.slice(source.indexOf('async function resolveNumericPartnerId('),source.indexOf('async function readPartner(')),c);
+  const page=texts=>({evaluate:async(fn,arg)=>{c.document={querySelectorAll:()=>texts.map(innerText=>({innerText}))};return vm.runInContext('('+fn.toString()+')',c)(arg);}});
+  assert.equal(await c.resolveNumericPartnerId(page(['Tintor Djurdja HU00 117997']),'117997'),'HU00117997');
+  assert.equal(await c.resolveNumericPartnerId(page(['Nothing found']),'117997'),null);
+  assert.equal(await c.resolveNumericPartnerId(page(['HU00117997','DE00117997']),'117997'),null);
+});
