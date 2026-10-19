@@ -704,7 +704,7 @@ async function fetchPartnerTotalPoints(page, partner) {
 
 // ─── Post snapshot ────────────────────────────────────────────────────────────
 
-async function postSnapshot(rows, pageUrl, username, snapDate) {
+async function postSnapshot(rows, pageUrl, username, snapDate, confirmation = null) {
   const ingestUrl = required('LR_APP_INGEST_URL');
   const token     = required('LR_APP_INGEST_TOKEN');
   const response  = await fetch(ingestUrl, {
@@ -718,13 +718,16 @@ async function postSnapshot(rows, pageUrl, username, snapDate) {
       url:        pageUrl,
       fetched_at: new Date().toISOString(),
       rows,
+      confirmation,
     }),
   });
   const text = await response.text();
   let data = {};
   try { data = JSON.parse(text); } catch (_) {}
   if (!response.ok || data.ok === false) {
-    throw new Error(`Ingest failed: HTTP ${response.status} ${text}`);
+    const error = new Error(`Ingest failed: HTTP ${response.status} ${text}`);
+    error.code = data.error || 'ingest_failed';
+    throw error;
   }
   if (data.preserved_existing) {
     throw new Error(`Ingest preserved existing snapshot for ${snapDate || todayIso()}: ${data.reason || 'incoming snapshot was not usable'}`);
@@ -734,6 +737,25 @@ async function postSnapshot(rows, pageUrl, username, snapDate) {
 }
 
 // ─── Scrape one user ──────────────────────────────────────────────────────────
+
+async function postCurrentSnapshot(page, rows, username, email, password) {
+  try {
+    return await postSnapshot(rows, page.url(), username, todayIso());
+  } catch (error) {
+    if (error.code !== 'snapshot_partial_rows') throw error;
+    console.log('  [confirm] Partner list changed; reloading LR Neo independently before retrying.');
+    await openAline(page, email, password);
+    const confirmedRows = cleanAndDedup(await waitForAlineRows(page));
+    const confirmation = {
+      method: 'independent_reload',
+      fetched_at: new Date().toISOString(),
+      rows: confirmedRows,
+    };
+    // The server checks both captures, account identity and line/total sums.
+    // A failed or inconsistent second capture never replaces existing data.
+    return await postSnapshot(rows, page.url(), username, todayIso(), confirmation);
+  }
+}
 
 async function scrapeUser(headless, username, email, password, cookieHeader = '') {
   console.log(`\n[user: ${username}] Starting...`);
@@ -761,7 +783,7 @@ async function scrapeUser(headless, username, email, password, cookieHeader = ''
       await saveDebugScreenshot(page, 'debug-aline-current-no-partners.png');
       throw new Error(`current_snapshot_has_no_partners: rows=${rows.length}`);
     }
-    const result  = await postSnapshot(rows, page.url(), username, todayIso());
+    const result  = await postCurrentSnapshot(page, rows, username, email, password);
     console.log(`[user: ${username}] ✓ rows=${rows.length} date=${result.date || todayIso()}`);
 
     // ── Historical capture ───────────────────────────────────────────────────

@@ -51,3 +51,26 @@ test('main snapshot workflow fails if any user is incomplete', async () => {
   vm.createContext(c); vm.runInContext(main.slice(main.indexOf('async function main()'),main.indexOf('async function scrapeTeamPoints(')),c);
   await c.main();assert.equal(JSON.parse(logs.at(-1)).ok,false);assert.equal(c.exit,1);
 });
+
+function snapshotHarness(code = 'snapshot_partial_rows', secondFails = false) {
+  const main=fs.readFileSync(__dirname+'/lrneo-worker.js','utf8');const calls=[];let reloads=0;
+  const rows=[['HU123456','Fixture','10','0','10']];
+  const c={console:{log(){}},Date,postSnapshot:async(...args)=>{
+    calls.push(args);if(calls.length===1||secondFails){const e=new Error('rejected');e.code=code;throw e;}return {ok:true};
+  },openAline:async()=>{reloads++;},waitForAlineRows:async()=>rows,cleanAndDedup:r=>r,todayIso:()=> '2026-10-19'};
+  vm.createContext(c);vm.runInContext(main.slice(main.indexOf('async function postCurrentSnapshot('),main.indexOf('async function scrapeUser(')),c);
+  return {c,rows,calls,reloads:()=>reloads};
+}
+test('smaller list triggers one independent reload and sends second capture',async()=>{
+  const h=snapshotHarness();const r=await h.c.postCurrentSnapshot({url:()=> 'https://neo.lrworld.com/a-line'},h.rows,'fixture','email','password');
+  assert.equal(r.ok,true);assert.equal(h.reloads(),1);assert.equal(h.calls.length,2);
+  assert.equal(h.calls[1][4].method,'independent_reload');assert.equal(h.calls[1][4].rows,h.rows);
+});
+test('unrelated ingest failure is never retried as a list change',async()=>{
+  const h=snapshotHarness('bad_ingest_token');await assert.rejects(h.c.postCurrentSnapshot({url:()=>''},h.rows,'fixture','',''));
+  assert.equal(h.reloads(),0);assert.equal(h.calls.length,1);
+});
+test('failed confirmation stops without a retry loop or false success',async()=>{
+  const h=snapshotHarness('snapshot_partial_rows',true);await assert.rejects(h.c.postCurrentSnapshot({url:()=>''},h.rows,'fixture','',''));
+  assert.equal(h.reloads(),1);assert.equal(h.calls.length,2);
+});
