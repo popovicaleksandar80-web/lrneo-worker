@@ -92,8 +92,16 @@ test('numeric registration resolves only from one real prefixed search result',a
   vm.runInContext(source.slice(source.indexOf('async function resolveNumericPartnerId('),source.indexOf('async function readPartner(')),c);
   const page=texts=>({evaluate:async(fn,arg)=>{c.document={querySelectorAll:()=>texts.map(innerText=>({innerText}))};return vm.runInContext('('+fn.toString()+')',c)(arg);}});
   assert.equal(await c.resolveNumericPartnerId(page(['Tintor Djurdja HU00 117997']),'117997'),'HU00117997');
+  assert.equal(await c.resolveNumericPartnerId(page(['Owner HU00067820']),'67820'),'HU00067820');
   assert.equal(await c.resolveNumericPartnerId(page(['Nothing found']),'117997'),null);
   assert.equal(await c.resolveNumericPartnerId(page(['HU00117997','DE00117997']),'117997'),null);
+});
+test('legacy short numeric registration reaches verified lookup without changing stored ID',async()=>{
+ const c={clean:x=>String(x||'').trim(),dismissCookiePopup:async()=>{},findSearchInput:async()=>({click:async()=>{},fill:async()=>{}}),
+  resolveNumericPartnerId:async()=> 'HU00067820',readPointsFromHuRow:async(_,id)=>{assert.equal(id,'HU00067820');return {ok:true,total_points:10173};}};
+ vm.createContext(c);vm.runInContext(source.slice(source.indexOf('async function readPartner('),source.indexOf('async function runUser(')),c);
+ const page={goto:async()=>{},waitForLoadState:async()=>{},waitForTimeout:async()=>{},screenshot:async()=>{},getByText:()=>({last:()=>({count:async()=>0})})};
+ const r=await c.readPartner(page,{lr_partner_id:'67820',subject_id:1});assert.equal(r.ok,true);assert.equal(r.lr_partner_id,'67820');assert.equal(r.source_lr_partner_id,'HU00067820');
 });
 test('contact and registered profile with the same LR number share one capture',async()=>{
   let reads=0;

@@ -295,7 +295,7 @@ async function resolveNumericPartnerId(page, number) {
 async function readPartner(page, partner) {
   const lrId = clean(partner.lr_partner_id).toUpperCase();
   if (!lrId) return { ...partner, ok: false, error: 'missing_lr_partner_id' };
-  if (!/^(?:[A-Z]{2})?\d{6,}$/.test(lrId)) return { ...partner, ok: false, error: 'invalid_lr_partner_id' };
+  if (!/^(?:[A-Z]{2}\d{6,}|\d{1,12})$/.test(lrId)) return { ...partner, ok: false, error: 'invalid_lr_partner_id' };
 
   await page.goto('https://neo.lrworld.com/a-line', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
