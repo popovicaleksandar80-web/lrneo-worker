@@ -74,3 +74,16 @@ test('failed confirmation stops without a retry loop or false success',async()=>
   const h=snapshotHarness('snapshot_partial_rows',true);await assert.rejects(h.c.postCurrentSnapshot({url:()=>''},h.rows,'fixture','',''));
   assert.equal(h.reloads(),1);assert.equal(h.calls.length,2);
 });
+test('SPA loading screen is awaited before deciding whether login is needed',async()=>{
+  const main=fs.readFileSync(__dirname+'/lrneo-worker.js','utf8');let ready=false;let loginAttempts=0;
+  const c={};vm.createContext(c);
+  vm.runInContext(main.slice(main.indexOf('async function loginIfNeeded('),main.indexOf('// ─── Extract rows')),c);
+  const input={first(){return this;},isVisible:async()=>false,waitFor:async()=>{loginAttempts++;throw new Error('wrong login attempt');}};
+  const page={waitForFunction:async()=>{ready=true;},locator:selector=>selector==='body'?{innerText:async()=>ready?'PSZ Összpont':''}:input};
+  await c.loginIfNeeded(page,'fixture','secret');assert.equal(ready,true);assert.equal(loginAttempts,0);
+});
+test('source readiness timeout propagates without attempting a login or write',async()=>{
+  const main=fs.readFileSync(__dirname+'/lrneo-worker.js','utf8');const c={};vm.createContext(c);
+  vm.runInContext(main.slice(main.indexOf('async function loginIfNeeded('),main.indexOf('// ─── Extract rows')),c);
+  await assert.rejects(c.loginIfNeeded({waitForFunction:async()=>{throw new Error('source unavailable');},locator:()=>{throw new Error('must not reach login');}},'',''),/source unavailable/);
+});

@@ -338,6 +338,13 @@ async function dismissCookiePopup(page) {
 // ─── Login ────────────────────────────────────────────────────────────────────
 
 async function loginIfNeeded(page, email, password) {
+  // DOMContentLoaded can precede the SPA rendering either the report or CAS.
+  // An empty loading screen must not be mistaken for a missing login form.
+  await page.waitForFunction(() => {
+    const passwordInput = document.querySelector('input[type="password"]');
+    return (passwordInput && passwordInput.getClientRects().length > 0)
+      || /PSZ|Összpont|Osszpont|Partner keresés|Partner kereses/.test(document.body?.innerText || '');
+  }, null, { timeout: 60000 });
   const user = page.locator('input[name="username"], input#username, input[type="email"], input[name="email"]').first();
   const pass = page.locator('input[name="password"], input#password, input[type="password"]').first();
   const loginVisible = await pass.isVisible({ timeout: 5000 }).catch(() => false);
