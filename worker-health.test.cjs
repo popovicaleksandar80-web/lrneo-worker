@@ -95,3 +95,11 @@ test('numeric registration resolves only from one real prefixed search result',a
   assert.equal(await c.resolveNumericPartnerId(page(['Nothing found']),'117997'),null);
   assert.equal(await c.resolveNumericPartnerId(page(['HU00117997','DE00117997']),'117997'),null);
 });
+test('contact and registered profile with the same LR number share one capture',async()=>{
+  let reads=0;
+  const h=harness([{subject_type:'contact',subject_id:1,lr_partner_id:'HU123456'},{subject_type:'user',subject_id:19,lr_partner_id:'HU123456'}],
+    async(_,p)=>({...p,ok:true,total_points:6379+(reads++)}),{complete:true,saved:2,missing:0});
+  await h.context.main();const result=JSON.parse(h.logs.at(-1));assert.equal(result.ok,true);assert.equal(reads,1);
+  assert.equal(result.results[0].results[0].total_points,result.results[0].results[1].total_points);
+  assert.equal(result.results[0].results[1].subject_id,19);
+});

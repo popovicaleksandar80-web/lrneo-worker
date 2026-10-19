@@ -342,6 +342,7 @@ async function runUser(user) {
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
   const results = [];
+  const captures = new Map();
   try {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, locale: 'hu-HU' });
     const sessionCookies = cookieHeaderToCookies(user.cookies || '');
@@ -351,9 +352,13 @@ async function runUser(user) {
     for (const partner of partners) {
       const lrId = clean(partner.lr_partner_id).toUpperCase();
       try {
-        let result = await readPartner(page, partner);
+        const shared = captures.get(lrId);
+        let result = shared
+          ? { ...partner, ok: true, total_points: shared.total_points, source_lr_partner_id: shared.source_lr_partner_id }
+          : await readPartner(page, partner);
         // A search/detail load can be transient. Retry this target once, never invent zero points.
         if (!result.ok) result = await readPartner(page, partner);
+        if (result.ok) captures.set(lrId, result);
         console.log(`[team:${user.username}] ${lrId} -> ${result.ok ? `${result.total_points} P` : result.error}`);
         results.push(result);
       } catch (error) {
